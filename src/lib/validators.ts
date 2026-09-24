@@ -260,7 +260,11 @@ export const domainRoutingRuleSchema = z
 		matchValue: z.string().trim().min(1).max(500),
 		action: z.enum(["store", "forward", "reject"]),
 		mailboxId: z.string().min(1).nullish(),
-		forwardTo: z.string().trim().email().nullish(),
+		// The form always sends forwardTo, empty unless the action is forward.
+		forwardTo: z.preprocess(
+			(value) => (typeof value === "string" && !value.trim() ? null : value),
+			z.string().trim().email().nullish(),
+		),
 		keepCopy: z.boolean().default(false),
 		rejectReason: z.string().trim().max(200).nullish(),
 		priority: z.number().int().min(0).max(1000).default(0),
@@ -287,7 +291,8 @@ export const domainRoutingRuleSchema = z
 				message: "Keeping a copy requires a destination mailbox",
 			});
 		}
-		if (value.matchOperator === "regex") {
+		// "*" is the catch-all pattern for every operator (see matchesRule in routing.ts).
+		if (value.matchOperator === "regex" && value.matchValue !== "*") {
 			try {
 				new RegExp(value.matchValue);
 			} catch {

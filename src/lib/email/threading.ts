@@ -44,6 +44,17 @@ export function buildReplyReferences(parentReferences: string[], parentMessageId
 }
 
 /**
+ * D1 allows at most 100 bound parameters per query, and each candidate is bound
+ * twice (with and without angle brackets). Long References chains keep the root
+ * and the most recent ancestors, the same ones buildReplyReferences keeps.
+ */
+export function limitThreadCandidates(references: string[]): string[] {
+	const MAX = 40;
+	if (references.length <= MAX) return references;
+	return [references[0], ...references.slice(references.length - (MAX - 1))];
+}
+
+/**
  * Work out which conversation a message belongs to. A reply names its parent in
  * In-Reply-To or References; if that parent is stored in the same mailbox, the
  * new message joins the parent's thread. Otherwise it starts a thread keyed by
@@ -51,7 +62,7 @@ export function buildReplyReferences(parentReferences: string[], parentMessageId
  */
 export async function resolveThreadId(db: Db, input: ResolveThreadInput): Promise<string> {
 	const candidates = new Set<string>();
-	for (const id of [normalizeMessageId(input.inReplyTo), ...(input.references ?? [])]) {
+	for (const id of [normalizeMessageId(input.inReplyTo), ...limitThreadCandidates(input.references ?? [])]) {
 		if (id) candidates.add(id);
 	}
 
