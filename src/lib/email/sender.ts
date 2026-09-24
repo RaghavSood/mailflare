@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getDb, type AppDatabase } from "@/db";
 import { domains, mailboxes, users } from "@/db/schema";
 import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
 import { formatEmailAddress, getEmailAddress } from "@/lib/email/address";
+import { resolveInboundAddress } from "@/lib/email/routing";
 import { getMailboxDomainAddresses } from "@/lib/mailboxes/domain-addresses";
 import { resolveMailboxDisplayName } from "@/lib/profile/identity-utils";
 
@@ -46,7 +47,10 @@ export async function getAuthorizedSenderAddress(
 
 	const requestedAddress = getEmailAddress(input.from);
 	const permittedAddresses = await getMailboxDomainAddresses(db, mailbox);
-	if (!permittedAddresses.includes(requestedAddress.toLowerCase())) {
+	if (
+		!permittedAddresses.includes(requestedAddress.toLowerCase())
+		&& !(await addressRoutesToMailbox(db, requestedAddress, mailbox.id))
+	) {
 		throw new Error("Sender address does not match the selected mailbox");
 	}
 	const senderAddress = requestedAddress.toLowerCase();
@@ -66,4 +70,38 @@ export async function getAuthorizedSenderAddress(
 		fromAddr: formatEmailAddress(senderAddress, `${actor.name} on behalf of ${mailboxName}`),
 		mailboxId: mailbox.id,
 	};
+}
+
+// Dot-atom addresses only: a custom sender is typed by the user and ends up in the From header.
+const CUSTOM_SENDER_PATTERN = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+
+/**
+ * Whether mail to `address` is delivered into the mailbox: its own addresses and
+ * aliases, or a catch-all rule that stores into it. A mailbox may send as any
+ * address it receives for, which never includes another mailbox's real address
+ * because real mailboxes win over catch-all rules in routing.
+ */
+export async function addressRoutesToMailbox(db: AppDatabase, address: string, mailboxId: string): Promise<boolean> {
+	if (!CUSTOM_SENDER_PATTERN.test(address.trim())) return false;
+	const decision = await resolveInboundAddress(db, address.trim());
+	if (!decision?.mailbox || decision.action === "reject") return false;
+	if (decision.action === "forward" && !decision.keepCopy) return false;
+	return decision.mailbox.mailboxId === mailboxId;
+}
+
+/**
+ * The address a reply to an inbound message should come from: the envelope
+ * recipient it was delivered to, when the mailbox may send as it. Null leaves the
+ * choice to the client (a To/Cc match, then the mailbox's primary address).
+ */
+export async function getReplyFromAddress(
+	db: AppDatabase,
+	message: { direction: string; mailboxId: string | null; deliveredTo: string | null },
+	cache = new Map<string, boolean>(),
+): Promise<string | null> {
+	if (message.direction !== "inbound" || !message.mailboxId || !message.deliveredTo) return null;
+	const address = message.deliveredTo.toLowerCase();
+	const key = `${message.mailboxId}|${address}`;
+	if (!cache.has(key)) cache.set(key, await addressRoutesToMailbox(db, address, message.mailboxId));
+	return cache.get(key) ? address : null;
 }

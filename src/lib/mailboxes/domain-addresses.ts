@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
-import { domains, mailboxAliases, mailboxes } from "@/db/schema";
+import { domains, mailboxAliases, mailboxes, routingRules } from "@/db/schema";
 import { deleteEmailRoutingRuleForAddress, ensureEmailRoutingRuleToWorker } from "@/lib/cloudflare-api";
 import { normalizeRecipientLocalPart } from "@/lib/email/recipient-address";
 import type { MailboxDomainAddressInput } from "./domain-addresses-types";
@@ -15,6 +15,33 @@ export async function getMailboxAliasAddresses(
 		.innerJoin(domains, eq(mailboxAliases.domainId, domains.id))
 		.where(eq(mailboxAliases.mailboxId, mailboxId));
 	return aliases.map((alias) => `${alias.localPart}@${alias.hostname}`.toLowerCase());
+}
+
+/**
+ * Domains whose catch-all (domain-scope store, or forward that keeps a copy) rules
+ * deliver into the mailbox. It may send as addresses there that are not real
+ * mailboxes; the composer offers a free-form sender for these domains.
+ */
+export async function getMailboxCatchAllHostnames(db: AppDatabase, mailboxId: string): Promise<string[]> {
+	const rows = await db
+		.select({ hostname: domains.hostname, action: routingRules.action, keepCopy: routingRules.keepCopy })
+		.from(routingRules)
+		.innerJoin(domains, eq(routingRules.domainId, domains.id))
+		.where(
+			and(
+				eq(routingRules.mailboxId, mailboxId),
+				eq(routingRules.scope, "domain"),
+				eq(routingRules.enabled, true),
+				eq(domains.status, "active"),
+			),
+		);
+	return [
+		...new Set(
+			rows
+				.filter((row) => row.action === "store" || (row.action === "forward" && row.keepCopy))
+				.map((row) => row.hostname.toLowerCase()),
+		),
+	];
 }
 
 export async function getMailboxDomainAddresses(

@@ -24,8 +24,10 @@ export function ThreadMessageActions({
 	message,
 	mailboxId,
 	ownAddress,
-	ownAddresses = [],
+	ownAddresses: mailboxAddresses = [],
 }: ThreadMessageActionsProps) {
+	// A catch-all address this message reached is ours too, so reply-all leaves it off.
+	const ownAddresses = message.replyFromAddress ? [...mailboxAddresses, message.replyFromAddress] : mailboxAddresses;
 	const { openDraftComposer } = useCompose();
 	const [starred, setStarred] = useState(message.starred);
 	const [moreOpen, setMoreOpen] = useState(false);

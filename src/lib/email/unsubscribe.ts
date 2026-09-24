@@ -1,14 +1,8 @@
+import { getHeaderBlock } from "@/lib/email/header-utils";
 import type { UnsubscribeUrl } from "@/lib/email/unsubscribe-types";
 
 const maxHeaderBytes = 64 * 1024;
 const allowedUnsubscribeProtocols = new Set(["http:", "https:", "mailto:"]);
-
-function getHeaderBlock(raw: ArrayBuffer): string {
-	const slice = raw.slice(0, Math.min(raw.byteLength, maxHeaderBytes));
-	const text = new TextDecoder("utf-8", { fatal: false }).decode(slice);
-	const headerEnd = text.search(/\r?\n\r?\n/);
-	return headerEnd === -1 ? text : text.slice(0, headerEnd);
-}
 
 function parseHeaders(headerBlock: string): Map<string, string[]> {
 	const headers = new Map<string, string[]>();

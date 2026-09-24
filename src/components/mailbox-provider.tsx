@@ -37,6 +37,8 @@ export type MailboxOption = {
 	permission?: "read_only" | "send_as" | "send_on_behalf" | "full_access";
 	isPrimary?: boolean;
 	senderAddresses?: string[];
+	/** Domains whose catch-all delivers here; the mailbox may send as any unclaimed address on them. */
+	catchAllHostnames?: string[];
 };
 
 type MailboxContextValue = {

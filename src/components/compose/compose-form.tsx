@@ -25,6 +25,13 @@ import {
 	textToHtml,
 } from "./rich-text-utils";
 import { headerToRecipients, isValidRecipient, recipientsToHeader } from "./recipient-utils";
+import {
+	CUSTOM_SENDER_OPTION,
+	getComposeSenderAddresses,
+	getMailboxSenderAddresses,
+	validateCustomSender,
+} from "./sender-utils";
+import type { ComposeCustomSender } from "./sender-types";
 import type { ComposeAttachment, ComposeStoredAttachment, ComposeThreading } from "./types";
 
 type Toast = { type: "success" | "error"; message: string } | null;
@@ -62,6 +69,9 @@ export function ComposeForm({
 	const [loadedDraftMailboxId, setLoadedDraftMailboxId] = useState<string | null>(null);
 	const [loadedDraftFrom, setLoadedDraftFrom] = useState<string | null>(null);
 	const [selectedFrom, setSelectedFrom] = useState("");
+	const [customSender, setCustomSender] = useState<ComposeCustomSender | null>(null);
+	// Mailbox whose "Other address" field is open, with what has been typed so far.
+	const [customSenderEntry, setCustomSenderEntry] = useState<{ mailboxId: string; value: string; error: string | null } | null>(null);
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const draftGeneration = useRef(0);
 	const attachmentInput = useRef<HTMLInputElement | null>(null);
@@ -71,19 +81,17 @@ export function ComposeForm({
 		if (!selectedMailbox && mailboxes.length === 1) setSelectedMailbox(mailboxes[0]);
 	}, [mailboxes, selectedMailbox, setSelectedMailbox]);
 
-	const senderAddresses = useMemo(() => {
-		if (!selectedMailbox) return [];
-		return selectedMailbox.senderAddresses?.length
-			? selectedMailbox.senderAddresses
-			: [`${selectedMailbox.localPart}@${selectedMailbox.hostname}`];
-	}, [selectedMailbox]);
+	const senderAddresses = useMemo(
+		() => getComposeSenderAddresses(selectedMailbox, customSender),
+		[customSender, selectedMailbox],
+	);
 	const senderOptions = useMemo(
-		() => mailboxes.flatMap((mailbox) => {
-			const addresses = mailbox.senderAddresses?.length
-				? mailbox.senderAddresses
-				: [`${mailbox.localPart}@${mailbox.hostname}`];
-			return addresses.map((address) => ({ mailbox, address }));
-		}),
+		() => mailboxes.flatMap((mailbox) =>
+			getComposeSenderAddresses(mailbox, customSender).map((address) => ({ mailbox, address }))),
+		[customSender, mailboxes],
+	);
+	const customSenderMailboxes = useMemo(
+		() => mailboxes.filter((mailbox) => (mailbox.catchAllHostnames?.length ?? 0) > 0),
 		[mailboxes],
 	);
 	const fromAddr = selectedMailbox && selectedFrom
@@ -136,7 +144,11 @@ export function ComposeForm({
 				setQuotedHtml(stored.quoted);
 				setStoredAttachments(draft.attachments?.filter((item) => item.disposition === "attachment") ?? []);
 				setLoadedDraftMailboxId(draft.mailboxId);
-				setLoadedDraftFrom(getEmailAddress(draft.fromAddr).toLowerCase());
+				const draftFrom = getEmailAddress(draft.fromAddr).toLowerCase();
+				setLoadedDraftFrom(draftFrom);
+				// A reply to catch-all mail comes from the address it reached, which is
+				// not in the mailbox's fixed list; the server already accepted it.
+				if (draft.mailboxId) setCustomSender({ mailboxId: draft.mailboxId, address: draftFrom });
 			})
 			.catch((err) => {
 				if (cancelled) return;
@@ -358,10 +370,32 @@ export function ComposeForm({
 	}
 
 	function selectSender(value: string) {
+		const [mailboxId, address] = value.split("|");
+		if (address === CUSTOM_SENDER_OPTION) {
+			setCustomSenderEntry({ mailboxId, value: "", error: null });
+			return;
+		}
 		const option = senderOptions.find((item) => `${item.mailbox.id}|${item.address}` === value);
 		if (!option) return;
 		setSelectedFrom(option.address);
 		if (selectedMailbox?.id !== option.mailbox.id) setSelectedMailbox(option.mailbox);
+	}
+
+	function applyCustomSender() {
+		if (!customSenderEntry) return;
+		const mailbox = mailboxes.find((item) => item.id === customSenderEntry.mailboxId);
+		if (!mailbox) return;
+		const result = validateCustomSender(customSenderEntry.value, mailbox);
+		if ("error" in result) {
+			setCustomSenderEntry({ ...customSenderEntry, error: result.error });
+			return;
+		}
+		if (!getMailboxSenderAddresses(mailbox).includes(result.address)) {
+			setCustomSender({ mailboxId: mailbox.id, address: result.address });
+		}
+		if (selectedMailbox?.id !== mailbox.id) setSelectedMailbox(mailbox);
+		setSelectedFrom(result.address);
+		setCustomSenderEntry(null);
 	}
 
 	const frameClass =
@@ -407,21 +441,57 @@ export function ComposeForm({
 				</div>
 				<div className="border-b border-neutral-100 px-4 py-1 flex flex-row items-center">
 					<Label htmlFor={`${mode}-from`} className="text-sm text-neutral-500">From</Label>
-					<Select
-						id={`${mode}-from`}
-						value={selectedMailbox && selectedFrom ? `${selectedMailbox.id}|${selectedFrom}` : ""}
-						onChange={(event) => selectSender(event.target.value)}
-						// placeholder="Select a mailbox first"
-						required
-						disabled={loadingDraft || senderOptions.length === 0}
-						className="h-8 px-0 py-1 text-sm shadow-none focus-visible:ring-0"
-						containerClassName="border-0 flex-1"
-					>
-						{senderOptions.length === 0 && <option value="">Select a mailbox first</option>}
-						{senderOptions.map(({ mailbox, address }) => (
-							<option key={`${mailbox.id}|${address}`} value={`${mailbox.id}|${address}`}>{address}</option>
-						))}
-					</Select>
+					{customSenderEntry ? (
+						<div className="flex flex-1 items-center gap-2">
+							<Input
+								id={`${mode}-from`}
+								autoFocus
+								value={customSenderEntry.value}
+								onChange={(event) => setCustomSenderEntry({ ...customSenderEntry, value: event.target.value, error: null })}
+								onKeyDown={(event) => {
+									if (event.key === "Enter") {
+										event.preventDefault();
+										applyCustomSender();
+									}
+									if (event.key === "Escape") {
+										event.preventDefault();
+										setCustomSenderEntry(null);
+									}
+								}}
+								placeholder={`anything@${mailboxes.find((item) => item.id === customSenderEntry.mailboxId)?.catchAllHostnames?.[0] ?? "example.com"}`}
+								aria-invalid={!!customSenderEntry.error}
+								className="h-8 border-0 px-2 py-1 text-sm shadow-none focus-visible:ring-0"
+							/>
+							{customSenderEntry.error && (
+								<span className="shrink-0 text-xs text-red-600">{customSenderEntry.error}</span>
+							)}
+							<Button type="button" size="sm" variant="outline" onClick={applyCustomSender}>Use</Button>
+							<Button type="button" size="sm" variant="ghost" onClick={() => setCustomSenderEntry(null)}>Cancel</Button>
+						</div>
+					) : (
+						<Select
+							id={`${mode}-from`}
+							value={selectedMailbox && selectedFrom ? `${selectedMailbox.id}|${selectedFrom}` : ""}
+							onChange={(event) => selectSender(event.target.value)}
+							// placeholder="Select a mailbox first"
+							required
+							disabled={loadingDraft || senderOptions.length === 0}
+							className="h-8 px-0 py-1 text-sm shadow-none focus-visible:ring-0"
+							containerClassName="border-0 flex-1"
+						>
+							{senderOptions.length === 0 && <option value="">Select a mailbox first</option>}
+							{senderOptions.map(({ mailbox, address }) => (
+								<option key={`${mailbox.id}|${address}`} value={`${mailbox.id}|${address}`}>{address}</option>
+							))}
+							{customSenderMailboxes.map((mailbox) => (
+								<option key={`${mailbox.id}|${CUSTOM_SENDER_OPTION}`} value={`${mailbox.id}|${CUSTOM_SENDER_OPTION}`}>
+									{customSenderMailboxes.length > 1
+										? `Other address on ${mailbox.catchAllHostnames?.join(", ")}…`
+										: "Other address…"}
+								</option>
+							))}
+						</Select>
+					)}
 				</div>
 				<RecipientInput
 					id={`${mode}-to`}

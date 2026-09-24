@@ -18,6 +18,8 @@ import { PreviousMessage } from "@/components/previous-message";
 import { ConversationThread } from "@/components/messages/conversation-thread";
 import { ThreadMessageActions } from "@/components/messages/thread-message-actions";
 import { SpamScoreDetails } from "@/components/messages/spam-score-details";
+import { MessageHeaderDetails } from "@/components/messages/message-header-details";
+import { getHiddenEnvelopeRecipient } from "@/components/messages/message-header-details-utils";
 import { useMessageThread } from "@/components/messages/use-message-thread";
 import { useLatestMessagesFirst } from "@/components/messages/use-latest-messages-first";
 import { getMessageBackHref } from "@/components/message-actions/utils";
@@ -110,15 +112,20 @@ export default function MessageDetailPage() {
     message,
     currentAccountName,
   );
-  const ownAddresses = messageMailbox
+  const mailboxAddresses = messageMailbox
     ? messageMailbox.senderAddresses?.length
       ? messageMailbox.senderAddresses
       : [`${messageMailbox.localPart}@${messageMailbox.hostname}`]
     : [];
+  // A catch-all address this message reached is ours too, so reply-all leaves it off.
+  const ownAddresses = message.replyFromAddress
+    ? [...mailboxAddresses, message.replyFromAddress]
+    : mailboxAddresses;
   const ownAddress = getOwnAddressForMessage(message, ownAddresses);
   const toEntries = splitEmailAddressList(message.toAddr);
   const ccEntries = splitEmailAddressList(message.ccAddr);
   const bccEntries = splitEmailAddressList(message.bccAddr);
+  const hiddenEnvelopeRecipient = getHiddenEnvelopeRecipient(message);
   const bodyDisplay = getMessageBodyDisplay(
     body?.textBody,
     body?.htmlBody,
@@ -199,7 +206,7 @@ export default function MessageDetailPage() {
                 ? `/api/mailboxes/${message.mailboxId}/avatar`
                 : undefined}
             />
-            <div>
+            <div className="min-w-0">
               <p className="text-sm text-neutral-900 mt-1.25">
                 <b>
                   {message.direction === "inbound" ? (
@@ -236,6 +243,12 @@ export default function MessageDetailPage() {
                   bcc <RecipientList entries={bccEntries} mailboxId={message.mailboxId} />
                 </p>
               )}
+              {hiddenEnvelopeRecipient && (
+                <p className="text-xs text-neutral-500" title="The address this message was delivered to; it is not listed in To or Cc">
+                  delivered to <span className="text-neutral-700">{hiddenEnvelopeRecipient}</span>
+                </p>
+              )}
+              <MessageHeaderDetails key={message.id} message={message} />
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">

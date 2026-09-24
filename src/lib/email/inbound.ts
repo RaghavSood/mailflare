@@ -12,6 +12,7 @@ import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
 import { listMessageAttachments, storeMessageAttachments } from "@/lib/email/attachments";
 import { getUnsubscribeUrlFromRawR2Key } from "@/lib/email/unsubscribe";
 import { resolveThreadId } from "@/lib/email/threading";
+import { getReplyFromAddress } from "@/lib/email/sender";
 import type { SessionUser } from "@/lib/auth/types";
 import { analyzeSpam } from "@/lib/spam/engine";
 import { getReputationKeys } from "@/lib/spam/analyzers/reputation";
@@ -144,6 +145,8 @@ export async function processInboundMessage(
 			threadId,
 			inReplyTo: parsed.inReplyTo,
 			references: parsed.references.length ? parsed.references.join(" ") : null,
+			deliveredTo: deliveredAddress.toLowerCase(),
+			envelopeFrom: getEmailAddress(payload.from).toLowerCase() || null,
 			spamScore: spamAnalysis?.score ?? null,
 			spamVerdict: spamAnalysis?.verdict ?? null,
 			spamSignals: spamAnalysis ? JSON.stringify(spamAnalysis.signals) : null,
@@ -250,7 +253,8 @@ export async function getMessageWithBodyForUser(env: CloudflareEnv, user: Sessio
 	const contactNames = await getMessageContactNames(env, message.userId, message.fromAddr, message.toAddr);
 	const attachments = await listMessageAttachments(env, messageId);
 	const unsubscribeUrl = await getUnsubscribeUrlFromRawR2Key(env, message.rawR2Key);
-	return { message: { ...message, ...contactNames }, body: message, attachments, unsubscribeUrl };
+	const replyFromAddress = await getReplyFromAddress(db, message);
+	return { message: { ...message, ...contactNames, replyFromAddress }, body: message, attachments, unsubscribeUrl };
 }
 
 export async function getMessageMetadataForUser(env: CloudflareEnv, user: SessionUser, messageId: string) {

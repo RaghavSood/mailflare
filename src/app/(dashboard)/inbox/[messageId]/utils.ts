@@ -35,11 +35,14 @@ export function getMessageHeaderParties(message: Message, currentAccountName?: s
 
 /**
  * The mailbox address this message reached, used as the reply sender and to
- * tell "sent" from "received" in quoted history. With several recipients the
- * mailbox's own address is whichever of them it can send as.
+ * tell "sent" from "received" in quoted history. The envelope recipient wins
+ * when the server says the mailbox may send as it (an alias or catch-all
+ * address, often absent from To and Cc); otherwise, with several recipients,
+ * the mailbox's own address is whichever of them it can send as.
  */
 export function getOwnAddressForMessage(message: Message, ownAddresses: string[]): string {
 	if (message.direction === "outbound") return getEmailAddress(message.fromAddr);
+	if (message.replyFromAddress) return message.replyFromAddress;
 	const own = new Set(ownAddresses.map((address) => normalizeEmailAddress(address)));
 	const listed = [...getEmailAddressList(message.toAddr), ...getEmailAddressList(message.ccAddr)];
 	return listed.find((address) => own.has(address)) ?? ownAddresses[0] ?? getEmailAddress(message.toAddr);

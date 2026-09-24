@@ -233,6 +233,10 @@ export const messages = sqliteTable(
 		// and so outgoing replies can carry them on to the recipient's client.
 		inReplyTo: text("in_reply_to"),
 		references: text("references_header"),
+		// SMTP envelope of an inbound delivery. The recipient can differ from every
+		// To/Cc entry (Bcc, list and catch-all mail), and is the address replies go out from.
+		deliveredTo: text("delivered_to"),
+		envelopeFrom: text("envelope_from"),
 		spamScore: integer("spam_score"),
 		spamVerdict: text("spam_verdict", { enum: ["inbox", "suspicious", "spam"] }),
 		spamSignals: text("spam_signals"),

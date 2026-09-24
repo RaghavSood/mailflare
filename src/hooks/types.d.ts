@@ -30,6 +30,11 @@ export type Message = {
 	threadId: string | null;
 	inReplyTo?: string | null;
 	references?: string | null;
+	/** SMTP envelope recipient of an inbound message; may appear in neither To nor Cc. */
+	deliveredTo?: string | null;
+	envelopeFrom?: string | null;
+	/** Set by the detail and thread APIs when replies should come from `deliveredTo`. */
+	replyFromAddress?: string | null;
 	spamScore?: number | null;
 	spamVerdict?: "inbox" | "suspicious" | "spam" | null;
 	spamSignals?: string | null;

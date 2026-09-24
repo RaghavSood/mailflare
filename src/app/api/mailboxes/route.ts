@@ -8,7 +8,11 @@ import { newId } from "@/lib/ids";
 import { getLicenseEntitlements } from "@/lib/licenses/service";
 import { tracksAccountIdentity } from "@/lib/profile/identity-utils";
 import { mailboxSchema } from "@/lib/validators";
-import { ensureMailboxDomainRouting, getMailboxDomainAddresses } from "@/lib/mailboxes/domain-addresses";
+import {
+	ensureMailboxDomainRouting,
+	getMailboxCatchAllHostnames,
+	getMailboxDomainAddresses,
+} from "@/lib/mailboxes/domain-addresses";
 import { ensurePersonalMailbox } from "./utils";
 
 export async function GET(request: Request) {
@@ -24,6 +28,7 @@ export async function GET(request: Request) {
 				? { displayName: user.name, hasAvatar: !!user.avatarKey }
 				: {}),
 			senderAddresses: await getMailboxDomainAddresses(db, mailbox),
+			catchAllHostnames: await getMailboxCatchAllHostnames(db, mailbox.id),
 		}))),
 		canCreateShared: user.role === "admin" && entitlements.canManageAccounts,
 	});

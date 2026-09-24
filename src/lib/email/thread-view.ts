@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { messageAttachments, messages } from "@/db/schema";
 import { getContactAvatarMap, getContactDisplayNameMap } from "@/lib/contacts/service";
 import { getFirstEmailAddressEntry, normalizeEmailAddress } from "@/lib/email/address";
+import { getReplyFromAddress } from "@/lib/email/sender";
 import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
 import type { SessionUser } from "@/lib/auth/types";
 
@@ -78,10 +79,17 @@ export async function getMessageThreadForUser(env: CloudflareEnv, user: SessionU
 		rows.map((row) => row.fromAddr),
 	);
 
+	const replyFromCache = new Map<string, boolean>();
+	const replyFromAddresses = new Map<string, string | null>();
+	for (const row of rows) {
+		replyFromAddresses.set(row.id, await getReplyFromAddress(db, row, replyFromCache));
+	}
+
 	return {
 		threadId: message.threadId,
 		messages: rows.map((row) => ({
 			...withoutRawKey(row),
+			replyFromAddress: replyFromAddresses.get(row.id) ?? null,
 			fromContactName: contactMap.get(normalizeEmailAddress(row.fromAddr)) ?? null,
 			fromContactHasAvatar: contactAvatarMap.get(normalizeEmailAddress(row.fromAddr)) ?? false,
 			toContactName: contactMap.get(normalizeEmailAddress(getFirstEmailAddressEntry(row.toAddr))) ?? null,
