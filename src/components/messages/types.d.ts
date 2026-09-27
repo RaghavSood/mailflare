@@ -55,7 +55,10 @@ export type BulkMessageToolbarProps = {
 	pending: boolean;
 };
 
-export type SelectedMessage = Pick<Message, "id" | "read">;
+export type SelectedMessage = Pick<Message, "id" | "read"> & {
+	/** In conversation view, every message of the row's thread in this folder. */
+	messageIds?: string[];
+};
 
 export type MessageSelectionControl = {
 	selectedMessages: SelectedMessage[];
@@ -65,6 +68,8 @@ export type MessageSelectionControl = {
 export type BulkMessageSelectionPaneProps = {
 	selectedMessages: SelectedMessage[];
 	onClearSelection: () => void;
+	/** Called after an action succeeds, with every message it touched. */
+	onActionComplete?: (action: BulkMessageAction, messageIds: string[]) => void;
 };
 
 export type PageRange = {

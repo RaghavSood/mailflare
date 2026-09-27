@@ -117,15 +117,21 @@ export function getMoveMessageActions(
   return actions;
 }
 
-export function getMessageActionRedirect(
-  action: BulkMessageAction,
-  direction: "inbound" | "outbound",
-) {
-  if (action === "trash") return "/trash";
-  if (action === "spam") return "/spam";
-  if (action === "archive") return "/archived";
-  if (action === "inbox") return "/inbox";
-  return null;
+/** Actions that take a message out of the list it was opened from. */
+export function isMoveMessageAction(action: BulkMessageAction) {
+  return action === "trash" || action === "spam" || action === "archive" || action === "inbox" || action === "folder";
+}
+
+/**
+ * The list an open message was reached from. Message routes nest under their
+ * list (/inbox/<id>, /starred/<id>, /folders/<folderId>/<id>) and the search
+ * query lives in context, so the parent route is the previous view, search
+ * included. Null when `pathname` is not this message's page.
+ */
+export function getMessageListHref(pathname: string, messageId: string): string | null {
+  const segments = pathname.replace(/\/+$/, "").split("/");
+  if (segments.length < 3 || segments[segments.length - 1] !== messageId) return null;
+  return segments.slice(0, -1).join("/");
 }
 
 export function buildReplySubject(subject: string | null | undefined) {

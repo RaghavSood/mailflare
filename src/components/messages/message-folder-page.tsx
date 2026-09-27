@@ -312,7 +312,7 @@ export function MessageFolderPage({
 		setSelectedMessages((current) => {
 			if (!selected) return current.filter((item) => item.id !== messageId);
 			if (current.some((item) => item.id === messageId)) return current;
-			return [...current, { id: message.id, read: message.read && !(message.threadUnread ?? 0) }];
+			return [...current, { id: message.id, read: message.read && !(message.threadUnread ?? 0), messageIds: rowMessageIds(message) }];
 		});
 	}
 
@@ -325,7 +325,7 @@ export function MessageFolderPage({
 
 			const next = new Map(current.map((message) => [message.id, message]));
 			for (const message of messages) {
-				next.set(message.id, { id: message.id, read: message.read && !(message.threadUnread ?? 0) });
+				next.set(message.id, { id: message.id, read: message.read && !(message.threadUnread ?? 0), messageIds: rowMessageIds(message) });
 			}
 			return Array.from(next.values());
 		});

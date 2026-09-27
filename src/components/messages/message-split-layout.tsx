@@ -1,6 +1,7 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { getMessageListHref, isMoveMessageAction } from "@/components/message-actions/utils";
 import { useState } from "react";
 import { BulkMessageSelectionPane } from "./bulk-message-selection-pane";
 import { MessageFolderPage } from "./message-folder-page";
@@ -11,6 +12,7 @@ export function MessageSplitLayout({
 	config,
 }: MessageSplitLayoutProps) {
 	const pathname = usePathname();
+	const router = useRouter();
 	const [selectedMessages, setSelectedMessages] = useState<SelectedMessage[]>([]);
 	const detailPrefix = `${config.hrefPrefix}/`;
 	const selectedMessageId = pathname.startsWith(detailPrefix)
@@ -34,6 +36,12 @@ export function MessageSplitLayout({
 					<BulkMessageSelectionPane
 						selectedMessages={selectedMessages}
 						onClearSelection={() => setSelectedMessages([])}
+						onActionComplete={(action, messageIds) => {
+							// The open message went with the selection: back to the list.
+							if (!isMoveMessageAction(action) || !messageIds.includes(selectedMessageId)) return;
+							const listHref = getMessageListHref(pathname, selectedMessageId);
+							if (listHref) router.replace(listHref);
+						}}
 					/>
 				) : (
 					children

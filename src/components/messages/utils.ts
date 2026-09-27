@@ -3,6 +3,8 @@ import { authFetch } from "@/lib/auth/client";
 import { getEmailDisplayName, splitEmailAddressList } from "@/lib/email/address";
 import dayjs from "dayjs";
 import type { MailboxOption } from "@/components/mailbox-provider";
+import type { ShortcutDefinition } from "@/components/shortcuts/types";
+import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import type { EmailPageTitleInput } from "./types";
 import type { MessageFolderConfig } from "./types";
 import type { PageRange } from "./types";
@@ -85,4 +87,31 @@ export async function runBulkMessageAction(messageIds: string[], action: string,
 
 	if (!response.ok) throw new Error("Unable to update selected messages");
 	if (notify) window.dispatchEvent(new Event("mailflare:messages-changed"));
+}
+
+/**
+ * Keys that act on the selected messages, matching the ones an open message
+ * answers to: # (and Delete/Backspace) trash, e/y archive, ! spam, Shift+I/U
+ * read/unread, Escape clears the selection.
+ */
+export function getBulkSelectionShortcuts({
+	onAction,
+	onClearSelection,
+}: {
+	onAction: (action: BulkMessageAction) => void;
+	onClearSelection: () => void;
+}): ShortcutDefinition[] {
+	const trash = { label: "Move Selected to Trash", category: "Selection" as const, action: () => onAction("trash") };
+	const archive = { label: "Archive Selected", category: "Selection" as const, action: () => onAction("archive") };
+	return [
+		{ key: "#", ...trash },
+		{ key: "delete", ...trash },
+		{ key: "backspace", ...trash },
+		{ key: "e", ...archive },
+		{ key: "y", ...archive },
+		{ key: "!", label: "Report Selected as Spam", category: "Selection", action: () => onAction("spam") },
+		{ key: "i", modifiers: ["shift"], label: "Mark Selected as Read", category: "Selection", action: () => onAction("read") },
+		{ key: "u", modifiers: ["shift"], label: "Mark Selected as Unread", category: "Selection", action: () => onAction("unread") },
+		{ key: "escape", label: "Clear Selection", category: "Selection", action: onClearSelection },
+	];
 }

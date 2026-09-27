@@ -1,7 +1,7 @@
 "use client";
 
 import { createElement, useState, useMemo, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Archive, Ban, BellOff, Forward, Mail, MailOpen, MoreVertical, Reply, ReplyAll, ShieldAlert, Trash2 } from "lucide-react";
 import { useCompose } from "@/components/compose/compose-context";
 import { useHotkeys, useShortcuts } from "@/components/shortcuts";
@@ -15,11 +15,13 @@ import {
 	createForwardDraft,
 	createReplyDraft,
 	createTrashSenderRule,
-	getMessageActionRedirect,
+	getMessageBackHref,
+	getMessageListHref,
 	getMoveMessageActions,
 	getReplyRecipients,
 	getReplyThreading,
 	hasAdditionalRecipients,
+	isMoveMessageAction,
 	openUnsubscribeUrl,
 	runSingleMessageAction,
 } from "./utils";
@@ -41,6 +43,7 @@ export function MessageActions({
 	bodyHtml,
 }: MessageActionsProps) {
 	const router = useRouter();
+	const pathname = usePathname();
 	const { openDraftComposer } = useCompose();
 	const { shortcutsEnabled } = useShortcuts();
 	const [pendingAction, setPendingAction] = useState<
@@ -49,21 +52,27 @@ export function MessageActions({
 	const [error, setError] = useState<string | null>(null);
 	const [moreOpen, setMoreOpen] = useState(false);
 
+	// Once the open message has moved out of its list, return to that list (with
+	// any search intact) instead of following it into Trash, Spam or Archived.
+	// Replace, so Back does not reopen the message that just left.
+	const leaveMessage = useCallback(() => {
+		router.replace(getMessageListHref(pathname, messageId) ?? getMessageBackHref(direction, status));
+	}, [direction, messageId, pathname, router, status]);
+
 	const runAction = useCallback(async (action: BulkMessageAction) => {
 		setMoreOpen(false);
 		setPendingAction(action);
 		setError(null);
 		try {
 			await runSingleMessageAction(messageId, action);
-			const redirect = getMessageActionRedirect(action, direction);
-			if (redirect) router.push(redirect);
+			if (isMoveMessageAction(action)) leaveMessage();
 			router.refresh();
 		} catch {
 			setError("Could not update message");
 		} finally {
 			setPendingAction(null);
 		}
-	}, [messageId, direction, router]);
+	}, [messageId, leaveMessage, router]);
 
 	const replyable = useMemo(() => message ?? {
 		direction,
@@ -207,7 +216,7 @@ export function MessageActions({
 		try {
 			await blockMessageContact({ mailboxId, senderAddress });
 			await runSingleMessageAction(messageId, "trash");
-			router.push("/trash");
+			leaveMessage();
 			router.refresh();
 		} catch (blockError) {
 			setError(blockError instanceof Error ? blockError.message : "Could not block contact");

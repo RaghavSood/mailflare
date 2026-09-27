@@ -10,6 +10,7 @@ import { runBulkMessageAction } from "./utils";
 export function BulkMessageSelectionPane({
 	selectedMessages,
 	onClearSelection,
+	onActionComplete,
 }: BulkMessageSelectionPaneProps) {
 	const [pending, setPending] = useState(false);
 	const hasUnreadSelection = selectedMessages.some((message) => !message.read);
@@ -19,11 +20,10 @@ export function BulkMessageSelectionPane({
 
 		setPending(true);
 		try {
-			await runBulkMessageAction(
-				selectedMessages.map((message) => message.id),
-				action,
-			);
+			const messageIds = selectedMessages.flatMap((message) => message.messageIds ?? [message.id]);
+			await runBulkMessageAction(messageIds, action);
 			onClearSelection();
+			onActionComplete?.(action, messageIds);
 		} finally {
 			setPending(false);
 		}

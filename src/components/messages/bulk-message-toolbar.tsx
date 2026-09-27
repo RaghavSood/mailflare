@@ -1,11 +1,14 @@
 "use client";
 
+import { useMemo } from "react";
 import { Archive, Mail, MailOpen, ShieldAlert, Trash2, X } from "lucide-react";
+import { useHotkeys, useShortcuts } from "@/components/shortcuts";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import type { BulkMessageToolbarProps } from "./types";
+import { getBulkSelectionShortcuts } from "./utils";
 
 export function BulkMessageToolbar({
 	selectedCount,
@@ -15,6 +18,20 @@ export function BulkMessageToolbar({
 	onClearSelection,
 	pending,
 }: BulkMessageToolbarProps) {
+	const { shortcutsEnabled } = useShortcuts();
+	// The toolbar is mounted exactly while messages are selected (in the list
+	// header, or the split view's selection pane), so its keys act on the selection.
+	const shortcuts = useMemo(
+		() => getBulkSelectionShortcuts({
+			onAction: (action) => {
+				if (!pending) onAction(action);
+			},
+			onClearSelection,
+		}),
+		[onAction, onClearSelection, pending],
+	);
+	useHotkeys(shortcuts, { enabled: shortcutsEnabled });
+
 	return (
 		<div className="flex min-w-0 items-center gap-2 text-neutral-600 w-full">
 			{!hideSelectedCount && (

@@ -1,6 +1,7 @@
 "use client";
 
 import { createElement, useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Ban, Forward, Mail, MailOpen, MoreVertical, Reply, ReplyAll, Star } from "lucide-react";
 import { useCompose } from "@/components/compose/compose-context";
 import { getOwnAddressForMessage } from "@/app/(dashboard)/inbox/[messageId]/utils";
@@ -10,10 +11,12 @@ import {
 	blockMessageContact,
 	createForwardDraft,
 	createReplyDraft,
+	getMessageListHref,
 	getMoveMessageActions,
 	getReplyRecipients,
 	getReplyThreading,
 	hasAdditionalRecipients,
+	isMoveMessageAction,
 	runSingleMessageAction,
 } from "@/components/message-actions/utils";
 import { toggleMessageStar } from "./message-list-row-actions-utils";
@@ -29,6 +32,8 @@ export function ThreadMessageActions({
 	// A catch-all address this message reached is ours too, so reply-all leaves it off.
 	const ownAddresses = message.replyFromAddress ? [...mailboxAddresses, message.replyFromAddress] : mailboxAddresses;
 	const { openDraftComposer } = useCompose();
+	const router = useRouter();
+	const pathname = usePathname();
 	const [starred, setStarred] = useState(message.starred);
 	const [moreOpen, setMoreOpen] = useState(false);
 	const [pending, setPending] = useState(false);
@@ -97,12 +102,20 @@ export function ThreadMessageActions({
 		}
 	}
 
+	// Moving the message whose page is open returns to the list it came from;
+	// moving another message of the thread leaves the conversation open.
+	function leaveIfOpen() {
+		const listHref = getMessageListHref(pathname, message.id);
+		if (listHref) router.replace(listHref);
+	}
+
 	async function onMessageAction(action: Parameters<typeof runSingleMessageAction>[1]) {
 		setMoreOpen(false);
 		setPending(true);
 		setError(null);
 		try {
 			await runSingleMessageAction(message.id, action);
+			if (isMoveMessageAction(action)) leaveIfOpen();
 		} catch (nextError) {
 			setError(nextError instanceof Error ? nextError.message : "Could not update message");
 		} finally {
@@ -118,6 +131,7 @@ export function ThreadMessageActions({
 		try {
 			await blockMessageContact({ mailboxId, senderAddress: message.fromAddr });
 			await runSingleMessageAction(message.id, "trash");
+			leaveIfOpen();
 		} catch (nextError) {
 			setError(nextError instanceof Error ? nextError.message : "Could not block contact");
 		} finally {

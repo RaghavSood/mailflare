@@ -7,9 +7,14 @@ interface UseHotkeysOptions {
   enabled?: boolean;
 }
 
+// Inputs that take no typed text: a focused checkbox (a message row's selection
+// box, right after clicking it) must not swallow shortcuts.
+const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "reset", "range", "color", "file", "image"]);
+
 export function isTypingInInput(target: EventTarget | null): boolean {
   if (!target || !(target instanceof HTMLElement)) return false;
   const tagName = target.tagName.toUpperCase();
+  if (target instanceof HTMLInputElement && NON_TEXT_INPUT_TYPES.has(target.type)) return false;
   const isInputOrTextarea =
     tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
   const isContentEditable =
