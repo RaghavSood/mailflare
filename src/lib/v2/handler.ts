@@ -26,7 +26,7 @@ import { parseFromValue } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
-import { defaultSender, readCookie, renderComposePage, renderRoute, timeZoneOf } from "./pages";
+import { defaultSender, readCookie, renderComposePage, renderRoute, timeZoneOf, withSenders } from "./pages";
 import { renderComposer, renderDock } from "./render/compose";
 import { formatFullDate } from "./render/format";
 import { renderDetails, renderMessageBody } from "./render/thread";
@@ -361,7 +361,8 @@ export async function handleV2Request(request: Request, env: CloudflareEnv): Pro
 		const [name, id] = route.name.split("/");
 		if (name === "compose") {
 			if (id === "new") {
-				const composer = renderComposer(emptyDraft(defaultSender(ctx)), { mailboxes: ctx.mailboxes, mode: "dock", key: `new-${Date.now().toString(36)}`, returnHref: "/v2/inbox" });
+				const composeCtx = await withSenders(ctx);
+				const composer = renderComposer(emptyDraft(defaultSender(composeCtx)), { mailboxes: composeCtx.mailboxes, mode: "dock", key: `new-${Date.now().toString(36)}`, returnHref: "/v2/inbox" });
 				return htmlResponse(renderDock(composer));
 			}
 			const reply = url.searchParams.get("reply");
@@ -370,7 +371,7 @@ export async function handleV2Request(request: Request, env: CloudflareEnv): Pro
 				const draftId = await createReplyDraft(env, user, {
 					messageId: reply,
 					mode: mode === "all" || mode === "forward" ? mode : "reply",
-					mailboxes: ctx.mailboxes,
+					mailboxes: (await withSenders(ctx)).mailboxes,
 					scopeMailboxIds: ctx.scopeMailboxIds,
 					formatDate: (date) => formatFullDate(date, timeZoneOf(ctx)),
 				});
@@ -422,17 +423,18 @@ export async function handleV2Request(request: Request, env: CloudflareEnv): Pro
 			const modeValue = String(form.get("mode") ?? "reply");
 			const mode = modeValue === "all" || modeValue === "forward" ? modeValue : "reply";
 			if (!ID.test(messageId)) return htmlResponse("Not found", { status: 404 });
+			const composeCtx = await withSenders(ctx);
 			const draftId = await createReplyDraft(env, user, {
 				messageId,
 				mode,
-				mailboxes: ctx.mailboxes,
+				mailboxes: composeCtx.mailboxes,
 				scopeMailboxIds: ctx.scopeMailboxIds,
 				formatDate: (date) => formatFullDate(date, timeZoneOf(ctx)),
 			});
 			const draft = draftId ? await loadDraft(env, user, draftId) : null;
 			if (!draft) return htmlResponse("You can't reply from this mailbox.", { status: 422 });
 			const current = safeReturnPath(currentPagePath(request, url));
-			return htmlResponse(html`<div id="reply-slot" class="reply-slot">${renderComposer(draft, { mailboxes: ctx.mailboxes, mode: "inline", key: draft.id ?? "reply", returnHref: current })}</div>`);
+			return htmlResponse(html`<div id="reply-slot" class="reply-slot">${renderComposer(draft, { mailboxes: composeCtx.mailboxes, mode: "inline", key: draft.id ?? "reply", returnHref: current })}</div>`);
 		}
 		case "draft": {
 			const input = composeInputFrom(form, ctx);

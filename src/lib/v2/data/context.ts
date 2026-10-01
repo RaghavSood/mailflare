@@ -7,25 +7,41 @@ import { getMailboxCatchAllHostnames, getMailboxDomainAddresses } from "@/lib/ma
 import { tracksAccountIdentity } from "@/lib/profile/identity-utils";
 import type { V2Counts, V2Folder, V2Mailbox } from "../types";
 
+/**
+ * The user's mailboxes. Sender addresses cost several queries per mailbox, so
+ * they are left empty here and filled by `loadSenders` only where a composer
+ * is rendered.
+ */
 export async function loadMailboxes(env: CloudflareEnv, user: SessionUser): Promise<V2Mailbox[]> {
+	const rows = await listAccessibleMailboxes(getDb(env), user);
+	return rows.map((mailbox) => ({
+		id: mailbox.id,
+		address: `${mailbox.localPart}@${mailbox.hostname}`,
+		userId: mailbox.userId,
+		name: mailbox.userId === user.id && tracksAccountIdentity(mailbox, user.email)
+			? user.name
+			: mailbox.displayName ?? mailbox.localPart,
+		signature: mailbox.signature ?? null,
+		canSend: hasMailboxPermission(mailbox.permission, "send_on_behalf"),
+		senderAddresses: [],
+		catchAllHostnames: [],
+		domainId: mailbox.domainId,
+		localPart: mailbox.localPart,
+		useAllDomains: mailbox.useAllDomains,
+	}));
+}
+
+/** Fill in the addresses each sendable mailbox may send as. */
+export async function loadSenders(env: CloudflareEnv, mailboxes: V2Mailbox[]): Promise<V2Mailbox[]> {
 	const db = getDb(env);
-	const rows = await listAccessibleMailboxes(db, user);
 	return Promise.all(
-		rows.map(async (mailbox) => {
-			const address = `${mailbox.localPart}@${mailbox.hostname}`;
-			const canSend = hasMailboxPermission(mailbox.permission, "send_on_behalf");
-			return {
-				id: mailbox.id,
-				address,
-				userId: mailbox.userId,
-				name: mailbox.userId === user.id && tracksAccountIdentity(mailbox, user.email)
-					? user.name
-					: mailbox.displayName ?? mailbox.localPart,
-				signature: mailbox.signature ?? null,
-				canSend,
-				senderAddresses: canSend ? await getMailboxDomainAddresses(db, mailbox) : [],
-				catchAllHostnames: canSend ? await getMailboxCatchAllHostnames(db, mailbox.id) : [],
-			};
+		mailboxes.map(async (mailbox) => {
+			if (!mailbox.canSend || mailbox.senderAddresses.length) return mailbox;
+			const [senderAddresses, catchAllHostnames] = await Promise.all([
+				getMailboxDomainAddresses(db, { id: mailbox.id, domainId: mailbox.domainId, localPart: mailbox.localPart, useAllDomains: mailbox.useAllDomains }),
+				getMailboxCatchAllHostnames(db, mailbox.id),
+			]);
+			return { ...mailbox, senderAddresses, catchAllHostnames };
 		}),
 	);
 }
@@ -41,7 +57,7 @@ export async function loadCounts(env: CloudflareEnv, scopeMailboxIds: string[]):
 	const now = Math.floor(Date.now() / 1000);
 	const unreadInbound = sql`${messages.direction} = 'inbound' and ${messages.read} = 0`;
 	const notSnoozed = sql`(${messages.snoozedUntil} is null or ${messages.snoozedUntil} <= ${now})`;
-	const [totals] = await db
+	const totalsQuery = db
 		.select({
 			inbox: sql<number>`coalesce(sum(case when ${unreadInbound} and ${messages.status} = 'received' and ${messages.folderId} is null and ${notSnoozed} then 1 else 0 end), 0)`,
 			spam: sql<number>`coalesce(sum(case when ${unreadInbound} and ${messages.status} = 'spam' then 1 else 0 end), 0)`,
@@ -50,7 +66,7 @@ export async function loadCounts(env: CloudflareEnv, scopeMailboxIds: string[]):
 		})
 		.from(messages)
 		.where(inArray(messages.mailboxId, scopeMailboxIds));
-	const folderRows = await db
+	const folderQuery = db
 		.select({
 			folderId: messages.folderId,
 			unread: sql<number>`coalesce(sum(case when ${unreadInbound} then 1 else 0 end), 0)`,
@@ -58,6 +74,7 @@ export async function loadCounts(env: CloudflareEnv, scopeMailboxIds: string[]):
 		.from(messages)
 		.where(and(inArray(messages.mailboxId, scopeMailboxIds), isNotNull(messages.folderId)))
 		.groupBy(messages.folderId);
+	const [[totals], folderRows] = await Promise.all([totalsQuery, folderQuery]);
 	return {
 		inbox: Number(totals?.inbox ?? 0),
 		spam: Number(totals?.spam ?? 0),

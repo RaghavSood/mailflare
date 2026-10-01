@@ -51,6 +51,9 @@ export type V2Mailbox = {
 	canSend: boolean;
 	senderAddresses: string[];
 	catchAllHostnames: string[];
+	domainId: string;
+	localPart: string;
+	useAllDomains: boolean;
 };
 
 /** Everything a page render needs about who is looking and with what settings. */

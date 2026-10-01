@@ -130,20 +130,23 @@ export async function loadList(
 	let reps: RepRow[];
 	const selectReps = () => db.select(rowColumns).from(messages);
 	if (grouped) {
-		const [totalRow] = await db.select({ total: countDistinct(threadKey) }).from(messages).where(where);
-		total = totalRow?.total ?? 0;
+		const totalQuery = db.select({ total: countDistinct(threadKey) }).from(messages).where(where);
 		const latest = db
 			.select({ tid: threadKey.as("tid"), latest: max(messages.createdAt).as("latest") })
 			.from(messages)
 			.where(where)
 			.groupBy(threadKey)
 			.as("latest_per_thread");
-		const joined = await selectReps()
-			.innerJoin(latest, and(eq(threadKey, latest.tid), eq(messages.createdAt, latest.latest)))
-			.where(where)
-			.orderBy(desc(messages.createdAt), desc(messages.id))
-			.limit(input.limit)
-			.offset(input.offset);
+		const [[totalRow], joined] = await Promise.all([
+			totalQuery,
+			selectReps()
+				.innerJoin(latest, and(eq(threadKey, latest.tid), eq(messages.createdAt, latest.latest)))
+				.where(where)
+				.orderBy(desc(messages.createdAt), desc(messages.id))
+				.limit(input.limit)
+				.offset(input.offset),
+		]);
+		total = totalRow?.total ?? 0;
 		const seen = new Set<string>();
 		reps = joined.filter((row) => {
 			const key = row.threadId ?? row.id;
@@ -152,20 +155,24 @@ export async function loadList(
 			return true;
 		});
 	} else {
-		const [totalRow] = await db.select({ total: count() }).from(messages).where(where);
+		const [[totalRow], rows] = await Promise.all([
+			db.select({ total: count() }).from(messages).where(where),
+			selectReps().where(where).orderBy(desc(messages.createdAt), desc(messages.id)).limit(input.limit).offset(input.offset),
+		]);
 		total = totalRow?.total ?? 0;
-		reps = await selectReps().where(where).orderBy(desc(messages.createdAt), desc(messages.id)).limit(input.limit).offset(input.offset);
+		reps = rows;
 	}
 	if (reps.length === 0) return { rows: [], total, page, pageSize: input.limit };
 
 	const keys = reps.map((row) => row.threadId ?? row.id);
 	// The messages each row stands for in this view, and the whole conversation
 	// (minus drafts and trash) for counts, names, stars and unread state.
-	const inView = grouped
-		? await db.select({ id: messages.id, key: threadKey }).from(messages).where(and(where, inArray(threadKey, keys)))
-		: reps.map((row) => ({ id: row.id, key: row.threadId ?? row.id }));
-	const conversation = grouped
-		? await db
+	const [inView, conversation] = await Promise.all([
+		grouped
+			? db.select({ id: messages.id, key: threadKey }).from(messages).where(and(where, inArray(threadKey, keys)))
+			: Promise.resolve(reps.map((row) => ({ id: row.id, key: row.threadId ?? row.id }))),
+		grouped
+			? db
 				.select({
 					key: threadKey,
 					id: messages.id,
@@ -184,29 +191,27 @@ export async function loadList(
 						notInArray(messages.status, input.view === "trash" ? ["draft"] : input.view === "spam" ? ["draft", "trash"] : ["draft", "trash", "spam"]),
 					),
 				)
-		: [];
+			: Promise.resolve([]),
+	]);
 	const memberIds = new Map<string, string[]>();
 	for (const member of inView) memberIds.set(member.key, [...(memberIds.get(member.key) ?? []), member.id]);
-	const withAttachments = new Set<string>();
-	// D1 binds at most 100 parameters per query.
-	for (const ids of chunk(inView.map((member) => member.id), 90)) {
-		const found = await db
+	// D1 binds at most 100 parameters per query, so large IN lists are chunked.
+	const attachmentQueries = chunk(inView.map((member) => member.id), 90).map((ids) =>
+		db
 			.selectDistinct({ messageId: messageAttachments.messageId })
 			.from(messageAttachments)
-			.where(and(inArray(messageAttachments.messageId, ids), eq(messageAttachments.disposition, "attachment")));
-		for (const row of found) withAttachments.add(row.messageId);
-	}
-
-	const names = new Map<string, string>();
-	for (const ownerId of new Set(reps.map((row) => row.userId))) {
+			.where(and(inArray(messageAttachments.messageId, ids), eq(messageAttachments.disposition, "attachment"))));
+	const nameQueries = [...new Set(reps.map((row) => row.userId))].flatMap((ownerId) => {
 		const addresses = new Set([
 			...reps.filter((row) => row.userId === ownerId).flatMap((row) => [row.fromAddr, ...getEmailAddressList(row.toAddr).slice(0, 3)]),
 			...conversation.map((member) => member.fromAddr),
 		].map(normalizeEmailAddress));
-		for (const group of chunk([...addresses], 90)) {
-			for (const [address, name] of await getContactDisplayNameMap(env, ownerId, group)) names.set(address, name);
-		}
-	}
+		return chunk([...addresses], 90).map((group) => getContactDisplayNameMap(env, ownerId, group));
+	});
+	const [attachmentRows, nameMaps] = await Promise.all([Promise.all(attachmentQueries), Promise.all(nameQueries)]);
+	const withAttachments = new Set(attachmentRows.flat().map((row) => row.messageId));
+	const names = new Map<string, string>();
+	for (const map of nameMaps) for (const [address, name] of map) names.set(address, name);
 	const nameFor = (address: string) => names.get(normalizeEmailAddress(address)) ?? getEmailDisplayName(address);
 
 	const rows: V2ListRow[] = reps.map((rep) => {

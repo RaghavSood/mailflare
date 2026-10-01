@@ -50,6 +50,12 @@
 			},
 		},
 	],
+	// Run near the D1 primary (APAC) instead of wherever a request lands: pages
+	// make several dependent queries, and each one would otherwise cross the world.
+	"placement": {
+		"mode": "smart",
+		"hint": "apac",
+	},
 	"observability": {
 		"enabled": true,
 	},

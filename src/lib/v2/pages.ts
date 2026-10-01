@@ -2,7 +2,7 @@ import { getEmailAddressList } from "@/lib/email/address";
 import { html, type Html } from "./html";
 import { getView, listHref, parseV2Path, threadHref } from "./paths";
 import type { V2Context, V2ViewKey } from "./types";
-import { loadCounts, loadFolder, loadFolders } from "./data/context";
+import { loadCounts, loadFolder, loadFolders, loadSenders } from "./data/context";
 import { emptyDraft, loadDraft } from "./data/compose";
 import { loadList, loadListWindow, V2_PAGE_SIZE } from "./data/list";
 import { loadThread, markRead } from "./data/thread";
@@ -48,9 +48,17 @@ export function readCookie(request: Request, name: string): string | null {
 }
 
 async function navState(ctx: V2Context, active: NavState["active"]): Promise<NavState> {
-	const counts = await loadCounts(ctx.env, ctx.scopeMailboxIds);
-	const folders = await loadFolders(ctx.env, ctx.scopeMailboxIds, counts);
-	return { counts, folders, active };
+	const empty = { inbox: 0, spam: 0, drafts: 0, snoozed: 0, folders: new Map<string, number>() };
+	const [counts, folders] = await Promise.all([
+		loadCounts(ctx.env, ctx.scopeMailboxIds),
+		loadFolders(ctx.env, ctx.scopeMailboxIds, empty),
+	]);
+	return { counts, folders: folders.map((folder) => ({ ...folder, unread: counts.folders.get(folder.id) ?? 0 })), active };
+}
+
+/** The context with sender addresses loaded, for pages that show a composer. */
+export async function withSenders(ctx: V2Context): Promise<V2Context> {
+	return { ...ctx, mailboxes: await loadSenders(ctx.env, ctx.mailboxes) };
 }
 
 function pageTitle(label: string, unread: number, ctx: V2Context): string {
@@ -79,10 +87,13 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 	const timeZone = timeZoneOf(ctx);
 
 	if (route.view === "drafts" && route.messageId) {
-		const draft = await loadDraft(ctx.env, ctx.user, route.messageId);
-		const nav = await navState(ctx, { view: "drafts", folderId: null });
+		const [draft, nav, senders] = await Promise.all([
+			loadDraft(ctx.env, ctx.user, route.messageId),
+			navState(ctx, { view: "drafts", folderId: null }),
+			loadSenders(ctx.env, ctx.mailboxes),
+		]);
 		if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
-		const composer = renderComposer(draft, { mailboxes: ctx.mailboxes, mode: "page", key: draft.id ?? "page", returnHref: listHref("drafts") });
+		const composer = renderComposer(draft, { mailboxes: senders, mode: "page", key: draft.id ?? "page", returnHref: listHref("drafts") });
 		return { status: 200, body: renderPage(ctx, { title: `${draft.subject || "Draft"} - Mailflare`, nav, q, main: renderComposePageMain(composer), toast: extras.toast }) };
 	}
 
@@ -103,10 +114,12 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 		if (!thread) return notFound(ctx, await navState(ctx, { view: route.view, folderId: route.folderId }), "That conversation was moved or deleted.");
 		const unreadIds = thread.messages.filter((message) => message.direction === "inbound" && !message.read).map((message) => message.id);
 		if (unreadIds.length) await markRead(ctx.env, ctx.user, unreadIds);
-		const nav = await navState(ctx, { view: route.view, folderId: route.folderId });
 		const indexParam = Number(ctx.url.searchParams.get("i"));
 		const index = Number.isInteger(indexParam) && indexParam >= 0 ? indexParam : null;
-		const window = index === null ? null : await loadListWindow(ctx.env, { view: route.view, scopeMailboxIds: ctx.scopeMailboxIds, folderId: route.folderId, q, index });
+		const [nav, window] = await Promise.all([
+			navState(ctx, { view: route.view, folderId: route.folderId }),
+			index === null ? Promise.resolve(null) : loadListWindow(ctx.env, { view: route.view, scopeMailboxIds: ctx.scopeMailboxIds, folderId: route.folderId, q, index }),
+		]);
 		const linkTo = (id: string | null, position: number) => (id ? threadHref(route.view, id, { folderId: route.folderId, q: q || null, i: position }) : null);
 		const listPage = index === null ? undefined : Math.floor(index / V2_PAGE_SIZE) + 1;
 		const own = new Set(ctx.mailboxes.flatMap((mailbox) => [mailbox.address, ...mailbox.senderAddresses]));
@@ -135,16 +148,18 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 	}
 
 	const pageNumber = Math.max(1, Math.min(10_000, Number(ctx.url.searchParams.get("page")) || 1));
-	const nav = await navState(ctx, { view: route.view, folderId: route.folderId });
-	const page = await loadList(ctx.env, {
-		view: route.view,
-		scopeMailboxIds: ctx.scopeMailboxIds,
-		mailboxes: ctx.mailboxes,
-		folderId: route.folderId,
-		q,
-		offset: (pageNumber - 1) * V2_PAGE_SIZE,
-		limit: V2_PAGE_SIZE,
-	});
+	const [nav, page] = await Promise.all([
+		navState(ctx, { view: route.view, folderId: route.folderId }),
+		loadList(ctx.env, {
+			view: route.view,
+			scopeMailboxIds: ctx.scopeMailboxIds,
+			mailboxes: ctx.mailboxes,
+			folderId: route.folderId,
+			q,
+			offset: (pageNumber - 1) * V2_PAGE_SIZE,
+			limit: V2_PAGE_SIZE,
+		}),
+	]);
 	const unread = route.view === "inbox" ? nav.counts.inbox : route.view === "spam" ? nav.counts.spam : 0;
 	const main = renderListMain(ctx, {
 		view: route.view,
@@ -160,8 +175,8 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 }
 
 /** A full-page composer (mobile compose, "compose in a new tab"). */
-export async function renderComposePage(ctx: V2Context, draftId: string | null): Promise<PageResult> {
-	const nav = await navState(ctx, { view: "drafts", folderId: null });
+export async function renderComposePage(baseCtx: V2Context, draftId: string | null): Promise<PageResult> {
+	const [nav, ctx] = await Promise.all([navState(baseCtx, { view: "drafts", folderId: null }), withSenders(baseCtx)]);
 	const draft = draftId ? await loadDraft(ctx.env, ctx.user, draftId) : emptyDraft(defaultSender(ctx));
 	if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
 	const composer = renderComposer(draft, { mailboxes: ctx.mailboxes, mode: "page", key: draft.id ?? "new", returnHref: "/v2/inbox" });
