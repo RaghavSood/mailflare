@@ -10,6 +10,7 @@ import { MessageActionError } from "@/lib/messages/actions";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
+import { withQueryTimer, type QueryTimer } from "./timing";
 import type { V2Context, V2Mailbox, V2Theme, V2ViewKey } from "./types";
 import { loadFolder, loadMailboxes } from "./data/context";
 import {
@@ -365,6 +366,18 @@ async function findMessage(ctx: V2Context, messageId: string) {
  * when script is off.
  */
 export async function handleV2Request(request: Request, env: CloudflareEnv): Promise<Response> {
+	const timer: QueryTimer = { calls: 0, ms: 0 };
+	const start = performance.now();
+	const response = await route(request, withQueryTimer(env, timer));
+	// Visible in the browser's network panel: time in the handler, and how much
+	// of it was spent waiting on D1.
+	const total = performance.now() - start;
+	const headers = new Headers(response.headers);
+	headers.set("Server-Timing", `app;dur=${total.toFixed(1)}, db;dur=${timer.ms.toFixed(1)};desc="${timer.calls} D1 calls"`);
+	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	const url = new URL(request.url);
 	const method = request.method.toUpperCase();
 	const route = parseV2Path(url.pathname);
