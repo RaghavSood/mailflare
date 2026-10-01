@@ -15,3 +15,20 @@ export async function createAuditLog(env: CloudflareEnv, input: AuditLogInput): 
 		metadata: input.metadata ? JSON.stringify(input.metadata) : null,
 	});
 }
+
+/** Many audit rows in one round trip. */
+export async function createAuditLogs(env: CloudflareEnv, inputs: AuditLogInput[]): Promise<void> {
+	if (inputs.length === 0) return;
+	const db = getDb(env);
+	const inserts = inputs.map((input) =>
+		db.insert(auditLogs).values({
+			id: newId("aud"),
+			actorUserId: input.actorUserId ?? null,
+			targetUserId: input.targetUserId ?? null,
+			mailboxId: input.mailboxId ?? null,
+			messageId: input.messageId ?? null,
+			action: input.action,
+			metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+		}));
+	await db.batch(inserts as [typeof inserts[number], ...typeof inserts]);
+}

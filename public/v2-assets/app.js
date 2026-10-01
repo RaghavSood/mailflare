@@ -102,8 +102,11 @@
 	});
 	document.addEventListener("htmx:afterRequest", () => body.classList.remove("is-loading"));
 	document.addEventListener("htmx:responseError", (event) => {
-		const text = event.detail.xhr?.responseText || "Something went wrong.";
-		toast(text.length > 200 ? "Something went wrong." : text);
+		const raw = event.detail.xhr?.responseText || "Something went wrong.";
+		const text = raw.length > 200 ? "Something went wrong." : raw;
+		// A refused list action already changed the rows; reload them, then explain.
+		if (event.detail.requestConfig?.parameters?.partial === "1") refresh().then(() => toast(text));
+		else toast(text);
 	});
 	document.addEventListener("htmx:sendError", () => toast("You appear to be offline."));
 
@@ -228,17 +231,67 @@
 		return $("#list-form");
 	}
 
-	/** Run an action on the selection, or on the row under the cursor. */
-	function actOnList(values) {
+	const REMOVING = new Set(["archive", "trash", "spam", "inbox", "folder"]);
+
+	/** Whether an action takes conversations out of the list being shown. */
+	function leavesList(values, view) {
+		const action = values.move ? (values.move.startsWith("folder:") ? "folder" : values.move) : values.action;
+		if (values.snooze) return view !== "all" && view !== "search" && view !== "starred";
+		if (!REMOVING.has(action)) return false;
+		if (action === "trash" || action === "spam") return true;
+		// Archived or moved mail is still in All mail, search results and Starred.
+		if (view === "all" || view === "search" || view === "starred") return false;
+		if (action === "inbox") return view !== "inbox";
+		return true;
+	}
+
+	/**
+	 * Run an action on the selection, or on the row under the cursor, the way
+	 * Gmail does: the rows change at once and the server only confirms. If it
+	 * refuses, the list reloads to show the truth.
+	 */
+	function actOnList(values, explicitIds) {
 		const form = listForm();
 		if (!form) return;
-		const ids = selectedIds();
-		const fallback = cursorRow()?.dataset.id;
-		if (!ids.length && !fallback) return toast("Select a conversation first.");
+		const ids = explicitIds ?? (selectedIds().length ? selectedIds() : [cursorRow()?.dataset.id].filter(Boolean));
+		if (!ids.length) return toast("Select a conversation first.");
 		const data = formValues(form);
-		if (!ids.length) data.ids = fallback;
-		return load("POST", "/v2/act", Object.assign(data, values));
+		data.ids = ids;
+		data.partial = "1";
+		Object.assign(data, values);
+		const view = page()?.dataset.view ?? "";
+		const affected = rows().filter((row) => ids.includes(row.dataset.id));
+		if (leavesList(values, view)) {
+			const cursorIndex = cursor;
+			affected.forEach((row) => row.remove());
+			const remaining = rows();
+			if (remaining.length) setCursor(Math.min(Math.max(cursorIndex, 0), remaining.length - 1), false);
+		} else if (values.action === "read" || values.action === "unread") {
+			affected.forEach((row) => row.classList.toggle("is-unread", values.action === "unread"));
+		}
+		selectWhere(() => false);
+		return window.htmx
+			.ajax("POST", "/v2/act", { target: "#toast", select: "#toast", swap: "outerHTML", values: data, source: body })
+			.then(() => {
+				// Refill a page that has emptied out.
+				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh();
+			});
 	}
+
+
+	// The toolbar and its menus submit the list form; send those through actOnList too.
+	document.addEventListener("submit", (event) => {
+		const form = event.target;
+		if (!(form instanceof HTMLFormElement) || form.id !== "list-form") return;
+		const submitter = event.submitter;
+		if (!submitter?.name) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		const values = { [submitter.name]: submitter.value };
+		if (submitter.name === "snooze") values.snoozeAt = form.querySelector("[name=snoozeAt]")?.value ?? $("[name=snoozeAt][form=list-form]")?.value ?? "";
+		closeMenus();
+		actOnList(values);
+	}, true);
 
 	function actOnThread(values) {
 		const form = $("#thread-form");
@@ -257,12 +310,8 @@
 		if (rowAction) {
 			event.preventDefault();
 			const row = rowAction.closest("[data-row]");
-			const form = listForm();
-			if (!row || !form) return;
-			const data = formValues(form);
-			data.ids = row.dataset.id;
-			data.action = rowAction.dataset.rowAction;
-			load("POST", "/v2/act", data);
+			if (!row) return;
+			actOnList({ action: rowAction.dataset.rowAction }, [row.dataset.id]);
 			return;
 		}
 		const star = target?.closest("[data-star]");
@@ -722,7 +771,7 @@
 	}
 
 	function refresh() {
-		load("GET", `${location.pathname}${location.search}`);
+		return load("GET", `${location.pathname}${location.search}`);
 	}
 
 	function undo() {

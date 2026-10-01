@@ -45,3 +45,66 @@ export function buildParticipants(
 	if (names.length <= 3) return names;
 	return [names[0], ...names.slice(-2)];
 }
+
+/**
+ * The conversation_views row a list reads, or null when the list has to group
+ * messages itself (drafts are listed one by one; searches go through the
+ * full-text index). Snoozed is the inbox rows whose snooze has not ended.
+ */
+export function summaryView(view: V2ViewKey, folderId: string | null | undefined, q: string | null | undefined): string | null {
+	if (q?.trim()) return null;
+	switch (view) {
+		case "inbox":
+		case "snoozed":
+			return "inbox";
+		case "folder":
+			return folderId ? `folder:${folderId}` : null;
+		case "starred":
+		case "sent":
+		case "archive":
+		case "all":
+		case "spam":
+		case "trash":
+			return view;
+		default:
+			return null;
+	}
+}
+
+type ViewMember = {
+	direction: "inbound" | "outbound";
+	status: string;
+	folderId: string | null;
+	starred: boolean;
+	snoozedUntil: Date | null;
+};
+
+/** Whether a message belongs to a view: the same rules as the conversation_views triggers. */
+export function memberInView(member: ViewMember, view: V2ViewKey, folderId: string | null | undefined, now = new Date()): boolean {
+	const everyday = !["draft", "spam", "trash"].includes(member.status);
+	switch (view) {
+		case "inbox":
+			return member.direction === "inbound" && member.status === "received" && member.folderId === null
+				&& (!member.snoozedUntil || member.snoozedUntil <= now);
+		case "snoozed":
+			return member.direction === "inbound" && member.status === "received" && member.folderId === null
+				&& !!member.snoozedUntil && member.snoozedUntil > now;
+		case "sent":
+			return member.direction === "outbound" && (member.status === "sent" || member.status === "queued");
+		case "drafts":
+			return member.status === "draft";
+		case "archive":
+			return member.status === "archived";
+		case "spam":
+			return member.status === "spam";
+		case "trash":
+			return member.status === "trash";
+		case "starred":
+			return member.starred && everyday;
+		case "folder":
+			return member.folderId === folderId && everyday;
+		case "all":
+		case "search":
+			return everyday;
+	}
+}

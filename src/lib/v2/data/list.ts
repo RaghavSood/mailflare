@@ -1,12 +1,12 @@
 import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, max, notInArray, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { getDb } from "@/db";
-import { messageAttachments, messages } from "@/db/schema";
+import { conversationViews, messageAttachments, messages } from "@/db/schema";
 import { getContactDisplayNameMap } from "@/lib/contacts/service";
 import { getEmailAddressList, getEmailDisplayName, normalizeEmailAddress } from "@/lib/email/address";
 import { buildSearchConditions } from "@/lib/search/conditions";
 import type { V2ListPage, V2ListRow, V2Mailbox, V2ViewKey } from "../types";
-import { buildParticipants, chunk } from "./list-utils";
+import { buildParticipants, chunk, memberInView, summaryView } from "./list-utils";
 
 export const V2_PAGE_SIZE = 50;
 
@@ -104,24 +104,141 @@ type RepRow = {
 	userId: string;
 };
 
+type ListInput = {
+	view: V2ViewKey;
+	scopeMailboxIds: string[];
+	mailboxes: V2Mailbox[];
+	folderId?: string | null;
+	q?: string | null;
+	offset: number;
+	limit: number;
+};
+
+/** Statuses a conversation's other messages are counted from in a view. */
+function hiddenStatuses(view: V2ViewKey): string[] {
+	if (view === "trash") return ["draft"];
+	if (view === "spam") return ["draft", "trash"];
+	return ["draft", "trash", "spam"];
+}
+
+function summaryConditions(input: { view: V2ViewKey; scopeMailboxIds: string[]; folderId?: string | null }, summary: string): SQL[] {
+	const now = new Date();
+	const conditions: SQL[] = [inArray(conversationViews.mailboxId, input.scopeMailboxIds), eq(conversationViews.view, summary)];
+	if (input.view === "inbox") conditions.push(lte(conversationViews.snoozeMin, Math.floor(now.getTime() / 1000)));
+	if (input.view === "snoozed") conditions.push(gt(conversationViews.snoozeMin, Math.floor(now.getTime() / 1000)));
+	return conditions;
+}
+
 /**
  * One page of conversations, newest first, each represented by its newest
- * message in the view. Drafts are listed one per draft.
+ * message in the view. Views read the conversation_views summary; searches
+ * group matching messages; drafts are listed one per draft.
  */
-export async function loadList(
-	env: CloudflareEnv,
-	input: {
-		view: V2ViewKey;
-		scopeMailboxIds: string[];
-		mailboxes: V2Mailbox[];
-		folderId?: string | null;
-		q?: string | null;
-		offset: number;
-		limit: number;
-	},
-): Promise<V2ListPage> {
+export async function loadList(env: CloudflareEnv, input: ListInput): Promise<V2ListPage> {
 	const page = Math.floor(input.offset / input.limit) + 1;
 	if (input.scopeMailboxIds.length === 0) return { rows: [], total: 0, page, pageSize: input.limit };
+	const summary = summaryView(input.view, input.folderId, input.q);
+	return summary ? loadSummaryList(env, input, summary, page) : loadGroupedList(env, input, page);
+}
+
+async function loadSummaryList(env: CloudflareEnv, input: ListInput, summary: string, page: number): Promise<V2ListPage> {
+	const db = getDb(env);
+	const where = and(...summaryConditions(input, summary));
+	// One round trip for the page and its size.
+	const [[totalRow], reps] = await db.batch([
+		db.select({ total: count() }).from(conversationViews).where(where),
+		db
+			.select({ ...rowColumns, threadKey: conversationViews.threadKey, unreadCount: conversationViews.unreadCount })
+			.from(conversationViews)
+			.innerJoin(messages, eq(messages.id, conversationViews.latestId))
+			.where(where)
+			.orderBy(desc(conversationViews.latestAt), desc(conversationViews.latestId))
+			.limit(input.limit)
+			.offset(input.offset),
+	]);
+	const total = totalRow?.total ?? 0;
+	if (reps.length === 0) return { rows: [], total, page, pageSize: input.limit };
+
+	const members = await db
+		.select({
+			key: threadKey,
+			id: messages.id,
+			fromAddr: messages.fromAddr,
+			direction: messages.direction,
+			status: messages.status,
+			folderId: messages.folderId,
+			read: messages.read,
+			starred: messages.starred,
+			snoozedUntil: messages.snoozedUntil,
+			createdAt: messages.createdAt,
+			hasAttachment: sql<number>`exists (select 1 from ${messageAttachments} where ${messageAttachments.messageId} = ${messages.id} and ${messageAttachments.disposition} = 'attachment')`,
+		})
+		.from(messages)
+		.where(and(
+			inArray(messages.mailboxId, input.scopeMailboxIds),
+			inArray(threadKey, reps.map((rep) => rep.threadKey)),
+			notInArray(messages.status, hiddenStatuses(input.view)),
+		));
+	const names = await loadNames(env, reps, members);
+	const now = new Date();
+	const rows: V2ListRow[] = reps.map((rep) => {
+		const conversation = members.filter((member) => member.key === rep.threadKey);
+		const inView = conversation.filter((member) => memberInView(member, input.view, input.folderId, now));
+		const ids = inView.length ? inView.map((member) => member.id) : [rep.id];
+		return {
+			id: rep.id,
+			threadKey: rep.threadKey,
+			mailboxId: rep.mailboxId,
+			direction: rep.direction,
+			status: rep.status,
+			folderId: rep.folderId,
+			fromAddr: rep.fromAddr,
+			toAddr: rep.toAddr,
+			subject: rep.subject,
+			snippet: rep.snippet,
+			createdAt: rep.createdAt,
+			read: rep.unreadCount === 0,
+			starred: conversation.some((member) => member.starred),
+			snoozedUntil: rep.snoozedUntil,
+			hasAttachments: inView.some((member) => member.hasAttachment),
+			count: Math.max(conversation.length, 1),
+			unread: rep.unreadCount > 0,
+			participants: buildParticipants((conversation.length ? conversation : [rep]).map((member) => ({
+				fromAddr: member.fromAddr,
+				direction: member.direction,
+				read: member.read,
+				createdAt: member.createdAt,
+			})), {
+				view: input.view,
+				nameFor: (address) => names.get(normalizeEmailAddress(address)) ?? getEmailDisplayName(address),
+				toAddr: rep.toAddr,
+			}),
+			memberIds: ids,
+		};
+	});
+	return { rows, total, page, pageSize: input.limit };
+}
+
+/** Contact names for the senders and first recipients on a page, chunked under D1's parameter limit. */
+async function loadNames(
+	env: CloudflareEnv,
+	reps: Array<{ userId: string; fromAddr: string; toAddr: string }>,
+	members: Array<{ fromAddr: string }>,
+): Promise<Map<string, string>> {
+	const lookups = [...new Set(reps.map((row) => row.userId))].flatMap((ownerId) => {
+		const addresses = new Set([
+			...reps.filter((row) => row.userId === ownerId).flatMap((row) => [row.fromAddr, ...getEmailAddressList(row.toAddr).slice(0, 3)]),
+			...members.map((member) => member.fromAddr),
+		].map(normalizeEmailAddress));
+		return chunk([...addresses], 90).map((group) => getContactDisplayNameMap(env, ownerId, group));
+	});
+	const names = new Map<string, string>();
+	for (const map of await Promise.all(lookups)) for (const [address, name] of map) names.set(address, name);
+	return names;
+}
+
+/** Search results and drafts: group matching messages by conversation at read time. */
+async function loadGroupedList(env: CloudflareEnv, input: ListInput, page: number): Promise<V2ListPage> {
 	const db = getDb(env);
 	const where = and(...viewConditions(input.view, input));
 	const grouped = input.view !== "drafts";
@@ -188,7 +305,7 @@ export async function loadList(
 					and(
 						inArray(messages.mailboxId, input.scopeMailboxIds),
 						inArray(threadKey, keys),
-						notInArray(messages.status, input.view === "trash" ? ["draft"] : input.view === "spam" ? ["draft", "trash"] : ["draft", "trash", "spam"]),
+						notInArray(messages.status, hiddenStatuses(input.view)),
 					),
 				)
 			: Promise.resolve([]),
@@ -201,17 +318,8 @@ export async function loadList(
 			.selectDistinct({ messageId: messageAttachments.messageId })
 			.from(messageAttachments)
 			.where(and(inArray(messageAttachments.messageId, ids), eq(messageAttachments.disposition, "attachment"))));
-	const nameQueries = [...new Set(reps.map((row) => row.userId))].flatMap((ownerId) => {
-		const addresses = new Set([
-			...reps.filter((row) => row.userId === ownerId).flatMap((row) => [row.fromAddr, ...getEmailAddressList(row.toAddr).slice(0, 3)]),
-			...conversation.map((member) => member.fromAddr),
-		].map(normalizeEmailAddress));
-		return chunk([...addresses], 90).map((group) => getContactDisplayNameMap(env, ownerId, group));
-	});
-	const [attachmentRows, nameMaps] = await Promise.all([Promise.all(attachmentQueries), Promise.all(nameQueries)]);
+	const [attachmentRows, names] = await Promise.all([Promise.all(attachmentQueries), loadNames(env, reps, conversation)]);
 	const withAttachments = new Set(attachmentRows.flat().map((row) => row.messageId));
-	const names = new Map<string, string>();
-	for (const map of nameMaps) for (const [address, name] of map) names.set(address, name);
 	const nameFor = (address: string) => names.get(normalizeEmailAddress(address)) ?? getEmailDisplayName(address);
 
 	const rows: V2ListRow[] = reps.map((rep) => {
@@ -260,8 +368,28 @@ export async function loadListWindow(
 ): Promise<{ newer: string | null; older: string | null; total: number }> {
 	if (input.scopeMailboxIds.length === 0) return { newer: null, older: null, total: 0 };
 	const db = getDb(env);
-	const where = and(...viewConditions(input.view, input));
 	const offset = Math.max(input.index - 1, 0);
+	const at = input.index - offset;
+	const summary = summaryView(input.view, input.folderId, input.q);
+	if (summary) {
+		const where = and(...summaryConditions(input, summary));
+		const [[totalRow], rows] = await db.batch([
+			db.select({ total: count() }).from(conversationViews).where(where),
+			db
+				.select({ id: conversationViews.latestId })
+				.from(conversationViews)
+				.where(where)
+				.orderBy(desc(conversationViews.latestAt), desc(conversationViews.latestId))
+				.limit(3)
+				.offset(offset),
+		]);
+		return {
+			newer: input.index > 0 ? rows[at - 1]?.id ?? null : null,
+			older: rows[at + 1]?.id ?? null,
+			total: totalRow?.total ?? 0,
+		};
+	}
+	const where = and(...viewConditions(input.view, input));
 	const [totalRow] = await db.select({ total: countDistinct(threadKey) }).from(messages).where(where);
 	const latest = db
 		.select({ tid: threadKey.as("tid"), latest: max(messages.createdAt).as("latest") })
@@ -284,7 +412,6 @@ export async function loadListWindow(
 		seen.add(key);
 		return true;
 	}).map((row) => row.id);
-	const at = input.index - offset;
 	return {
 		newer: input.index > 0 ? ids[at - 1] ?? null : null,
 		older: ids[at + 1] ?? null,

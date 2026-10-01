@@ -47,13 +47,21 @@ export function readCookie(request: Request, name: string): string | null {
 	return null;
 }
 
-async function navState(ctx: V2Context, active: NavState["active"]): Promise<NavState> {
-	const empty = { inbox: 0, spam: 0, drafts: 0, snoozed: 0, folders: new Map<string, number>() };
+/** Counts and folders for the navigation, with `active` highlighted. */
+export async function navStateFor(ctx: V2Context, active: NavState["active"]): Promise<NavState> {
+	const empty = { inbox: 0, spam: 0, drafts: 0, folders: new Map<string, number>() };
 	const [counts, folders] = await Promise.all([
 		loadCounts(ctx.env, ctx.scopeMailboxIds),
 		loadFolders(ctx.env, ctx.scopeMailboxIds, empty),
 	]);
 	return { counts, folders: folders.map((folder) => ({ ...folder, unread: counts.folders.get(folder.id) ?? 0 })), active };
+}
+
+export function writeScope(ctx: V2Context) {
+	return {
+		readable: ctx.mailboxes.map((mailbox) => mailbox.id),
+		manageable: ctx.mailboxes.filter((mailbox) => mailbox.canManage).map((mailbox) => mailbox.id),
+	};
 }
 
 /** The context with sender addresses loaded, for pages that show a composer. */
@@ -81,7 +89,7 @@ function notFound(ctx: V2Context, nav: NavState, message = "That page doesn't ex
 export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null } = {}): Promise<PageResult> {
 	const route = parseV2Path(ctx.url.pathname);
 	if (route.kind !== "view") {
-		return notFound(ctx, await navState(ctx, { view: "inbox", folderId: null }));
+		return notFound(ctx, await navStateFor(ctx, { view: "inbox", folderId: null }));
 	}
 	const q = ctx.url.searchParams.get("q")?.trim() ?? "";
 	const timeZone = timeZoneOf(ctx);
@@ -89,7 +97,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 	if (route.view === "drafts" && route.messageId) {
 		const [draft, nav, senders] = await Promise.all([
 			loadDraft(ctx.env, ctx.user, route.messageId),
-			navState(ctx, { view: "drafts", folderId: null }),
+			navStateFor(ctx, { view: "drafts", folderId: null }),
 			loadSenders(ctx.env, ctx.mailboxes),
 		]);
 		if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
@@ -100,7 +108,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 	let folderName: string | null = null;
 	if (route.view === "folder") {
 		const folder = route.folderId ? await loadFolder(ctx.env, route.folderId, ctx.scopeMailboxIds) : null;
-		if (!folder) return notFound(ctx, await navState(ctx, { view: "inbox", folderId: null }), "That folder doesn't exist.");
+		if (!folder) return notFound(ctx, await navStateFor(ctx, { view: "inbox", folderId: null }), "That folder doesn't exist.");
 		folderName = folder.name;
 	}
 	const label = route.view === "folder"
@@ -111,13 +119,13 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 
 	if (route.messageId) {
 		const thread = await loadThread(ctx.env, { messageId: route.messageId, view: route.view, scopeMailboxIds: ctx.scopeMailboxIds });
-		if (!thread) return notFound(ctx, await navState(ctx, { view: route.view, folderId: route.folderId }), "That conversation was moved or deleted.");
+		if (!thread) return notFound(ctx, await navStateFor(ctx, { view: route.view, folderId: route.folderId }), "That conversation was moved or deleted.");
 		const unreadIds = thread.messages.filter((message) => message.direction === "inbound" && !message.read).map((message) => message.id);
-		if (unreadIds.length) await markRead(ctx.env, ctx.user, unreadIds);
+		if (unreadIds.length) await markRead(ctx.env, writeScope(ctx), unreadIds);
 		const indexParam = Number(ctx.url.searchParams.get("i"));
 		const index = Number.isInteger(indexParam) && indexParam >= 0 ? indexParam : null;
 		const [nav, window] = await Promise.all([
-			navState(ctx, { view: route.view, folderId: route.folderId }),
+			navStateFor(ctx, { view: route.view, folderId: route.folderId }),
 			index === null ? Promise.resolve(null) : loadListWindow(ctx.env, { view: route.view, scopeMailboxIds: ctx.scopeMailboxIds, folderId: route.folderId, q, index }),
 		]);
 		const linkTo = (id: string | null, position: number) => (id ? threadHref(route.view, id, { folderId: route.folderId, q: q || null, i: position }) : null);
@@ -149,7 +157,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 
 	const pageNumber = Math.max(1, Math.min(10_000, Number(ctx.url.searchParams.get("page")) || 1));
 	const [nav, page] = await Promise.all([
-		navState(ctx, { view: route.view, folderId: route.folderId }),
+		navStateFor(ctx, { view: route.view, folderId: route.folderId }),
 		loadList(ctx.env, {
 			view: route.view,
 			scopeMailboxIds: ctx.scopeMailboxIds,
@@ -176,7 +184,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 
 /** A full-page composer (mobile compose, "compose in a new tab"). */
 export async function renderComposePage(baseCtx: V2Context, draftId: string | null): Promise<PageResult> {
-	const [nav, ctx] = await Promise.all([navState(baseCtx, { view: "drafts", folderId: null }), withSenders(baseCtx)]);
+	const [nav, ctx] = await Promise.all([navStateFor(baseCtx, { view: "drafts", folderId: null }), withSenders(baseCtx)]);
 	const draft = draftId ? await loadDraft(ctx.env, ctx.user, draftId) : emptyDraft(defaultSender(ctx));
 	if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
 	const composer = renderComposer(draft, { mailboxes: ctx.mailboxes, mode: "page", key: draft.id ?? "new", returnHref: "/v2/inbox" });

@@ -8,7 +8,8 @@ import {
 } from "@/app/api/messages/bulk/utils";
 import type { SessionUser } from "@/lib/auth/types";
 import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
-import { createAuditLog } from "@/lib/mailboxes/audit";
+import { createAuditLogs } from "@/lib/mailboxes/audit";
+import { runAfterResponse } from "@/lib/http/after-response";
 import { applySpamFeedback } from "@/lib/spam/feedback";
 
 export class MessageActionError extends Error {
@@ -74,30 +75,41 @@ export async function applyMessageAction(
 	}
 	if (allowedMessageIds.length === 0) throw new MessageActionError("No accessible messages", 404);
 
+	// The status change is what the user waits for; spam training and audit rows
+	// happen after the response.
 	if (action === "spam") {
-		for (const messageId of allowedMessageIds) await applySpamFeedback(env, user, messageId, "spam");
+		await updateInChunks(db, allowedMessageIds, values);
+		runAfterResponse("Spam training", async () => {
+			for (const messageId of allowedMessageIds) await applySpamFeedback(env, user, messageId, "spam");
+		});
 		return allowedMessageIds;
 	}
 	if (action === "inbox") {
 		const spamMessageIds = selectedMessages
 			.filter((message) => message.status === "spam" && allowedMessageIds.includes(message.id))
 			.map((message) => message.id);
-		const normalMessageIds = allowedMessageIds.filter((messageId) => !spamMessageIds.includes(messageId));
-		for (const messageId of spamMessageIds) await applySpamFeedback(env, user, messageId, "ham");
-		if (normalMessageIds.length) await db.update(messages).set(values).where(inArray(messages.id, normalMessageIds));
+		await updateInChunks(db, allowedMessageIds, values);
+		if (spamMessageIds.length) {
+			runAfterResponse("Not-spam training", async () => {
+				for (const messageId of spamMessageIds) await applySpamFeedback(env, user, messageId, "ham");
+			});
+		}
 		return allowedMessageIds;
 	}
 
-	await db.update(messages).set(values).where(inArray(messages.id, allowedMessageIds));
-	await Promise.all(
-		allowedMessageIds.map((messageId) =>
-			createAuditLog(env, {
-				actorUserId: user.id,
-				messageId,
-				action: action === "read" || action === "unread" ? "email.read" : "email.delete",
-				metadata: { bulkAction: action },
-			}),
-		),
-	);
+	await updateInChunks(db, allowedMessageIds, values);
+	runAfterResponse("Audit log", () =>
+		createAuditLogs(env, allowedMessageIds.map((messageId) => ({
+			actorUserId: user.id,
+			messageId,
+			action: action === "read" || action === "unread" ? "email.read" : "email.delete",
+			metadata: { bulkAction: action },
+		}))));
 	return allowedMessageIds;
+}
+
+async function updateInChunks(db: ReturnType<typeof getDb>, ids: string[], values: Partial<typeof messages.$inferInsert>): Promise<void> {
+	const parts = Array.from({ length: Math.ceil(ids.length / 90) }, (_, index) => ids.slice(index * 90, index * 90 + 90));
+	const updates = parts.map((part) => db.update(messages).set(values).where(inArray(messages.id, part)));
+	if (updates.length) await db.batch(updates as [typeof updates[number], ...typeof updates]);
 }

@@ -19,7 +19,7 @@ await build({
 			export { html, raw, escapeHtml } from "./src/lib/v2/html.ts";
 			export { parseV2Path, listHref, threadHref, v2ToClassic, classicToV2, safeReturnPath } from "./src/lib/v2/paths.ts";
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
-			export { buildParticipants, chunk } from "./src/lib/v2/data/list-utils.ts";
+			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
 			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
@@ -204,4 +204,31 @@ test("list dates read like Gmail in the viewer's zone", () => {
 	assert.equal(v2.initials("Alice Smith"), "AS");
 	assert.equal(v2.initials("  "), "?");
 	assert.equal(v2.recipientSummary(`"Bob B" <bob@x.com>, ME@y.com`, new Set(["me@y.com"])), "Bob B, me");
+});
+
+test("lists read the conversation summary except for searches and drafts", () => {
+	assert.equal(v2.summaryView("inbox", null, ""), "inbox");
+	assert.equal(v2.summaryView("snoozed", null, null), "inbox");
+	assert.equal(v2.summaryView("folder", "fld_1", null), "folder:fld_1");
+	assert.equal(v2.summaryView("folder", null, null), null);
+	assert.equal(v2.summaryView("archive", null, null), "archive");
+	assert.equal(v2.summaryView("inbox", null, "from:bob"), null);
+	assert.equal(v2.summaryView("search", null, "x"), null);
+	assert.equal(v2.summaryView("drafts", null, null), null);
+});
+
+test("view membership matches the conversation_views triggers", () => {
+	const now = new Date("2026-10-01T00:00:00Z");
+	const base = { direction: "inbound", status: "received", folderId: null, starred: false, snoozedUntil: null };
+	const later = new Date("2026-10-02T00:00:00Z");
+	assert.equal(v2.memberInView(base, "inbox", null, now), true);
+	assert.equal(v2.memberInView({ ...base, snoozedUntil: later }, "inbox", null, now), false);
+	assert.equal(v2.memberInView({ ...base, snoozedUntil: later }, "snoozed", null, now), true);
+	assert.equal(v2.memberInView({ ...base, folderId: "f" }, "inbox", null, now), false);
+	assert.equal(v2.memberInView({ ...base, folderId: "f" }, "folder", "f", now), true);
+	assert.equal(v2.memberInView({ ...base, folderId: "f", status: "trash" }, "folder", "f", now), false);
+	assert.equal(v2.memberInView({ ...base, direction: "outbound", status: "queued" }, "sent", null, now), true);
+	assert.equal(v2.memberInView({ ...base, starred: true, status: "spam" }, "starred", null, now), false);
+	assert.equal(v2.memberInView({ ...base, status: "archived" }, "all", null, now), true);
+	assert.equal(v2.memberInView({ ...base, status: "draft" }, "all", null, now), false);
 });

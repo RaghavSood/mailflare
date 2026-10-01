@@ -10,7 +10,7 @@ import { MessageActionError } from "@/lib/messages/actions";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
-import type { V2Context, V2Theme, V2ViewKey } from "./types";
+import type { V2Context, V2Mailbox, V2Theme, V2ViewKey } from "./types";
 import { loadFolder, loadMailboxes } from "./data/context";
 import {
 	createReplyDraft,
@@ -26,7 +26,8 @@ import { parseFromValue } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
-import { defaultSender, readCookie, renderComposePage, renderRoute, timeZoneOf, withSenders } from "./pages";
+import { defaultSender, navStateFor, readCookie, renderComposePage, renderRoute, timeZoneOf, withSenders, writeScope } from "./pages";
+import { renderNav, renderToast } from "./render/layout";
 import { renderComposer, renderDock } from "./render/compose";
 import { formatFullDate } from "./render/format";
 import { renderDetails, renderMessageBody } from "./render/thread";
@@ -91,15 +92,35 @@ function isSameOrigin(request: Request, url: URL): boolean {
 	return site === "same-origin" || site === "none";
 }
 
-async function authenticate(env: CloudflareEnv, request: Request): Promise<SessionUser | null> {
+/**
+ * Who is signed in and their mailboxes barely change between clicks, but cost
+ * several sequential queries. Each isolate remembers them per session for a
+ * few seconds; a sign-out or password change takes effect within that time.
+ */
+const IDENTITY_TTL_MS = 15_000;
+const identityCache = new Map<string, { user: SessionUser; mailboxes: V2Mailbox[]; expires: number }>();
+
+async function loadIdentity(env: CloudflareEnv, request: Request): Promise<{ user: SessionUser; mailboxes: V2Mailbox[] } | null> {
 	const token = getSessionTokenFromRequestHeaders(request);
 	if (!token) return null;
+	const now = Date.now();
+	const cached = identityCache.get(token);
+	if (cached && cached.expires > now) return cached;
 	const user = await getUserFromSession(env, token);
-	return user && !user.disabled ? (user as SessionUser) : null;
+	if (!user || user.disabled) {
+		identityCache.delete(token);
+		return null;
+	}
+	const mailboxes = await loadMailboxes(env, user as SessionUser);
+	if (identityCache.size >= 500) {
+		for (const [key, entry] of identityCache) if (entry.expires <= now || identityCache.size >= 500) identityCache.delete(key);
+	}
+	const identity = { user: user as SessionUser, mailboxes, expires: now + IDENTITY_TTL_MS };
+	identityCache.set(token, identity);
+	return identity;
 }
 
-async function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, url: URL): Promise<V2Context> {
-	const mailboxes = await loadMailboxes(env, user);
+function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, mailboxes: V2Mailbox[], url: URL): V2Context {
 	const selected = readCookie(request, "mf_mb");
 	const selectedMailboxId = selected && mailboxes.some((mailbox) => mailbox.id === selected) ? selected : null;
 	const theme = readCookie(request, "mf_theme");
@@ -177,20 +198,37 @@ async function handleAct(ctx: V2Context, form: FormData): Promise<Response> {
 	const stay = safeReturnPath(String(form.get("stay") ?? ""), returnTo);
 	const base = { ids, view, folderId, q, scopeMailboxIds: ctx.scopeMailboxIds, conversation };
 	const conversations = new Set(ids).size;
-	// Background updates from the page (a star toggled in the list) need no page back.
+	// Background updates from the page (a star toggled in the list) need no page
+	// back. List actions are applied to the rows in the browser already, so they
+	// only need the navigation counts and the toast; a failure tells the page to
+	// reload the list.
 	const quiet = form.get("quiet") === "1";
-	const respond = (path: string, options: { toast?: Html | null; push?: boolean } = {}) =>
-		quiet ? Promise.resolve(new Response(null, { status: 204, headers: securityHeaders(new Headers()) })) : respondWithPage(ctx, path, options);
+	const partial = form.get("partial") === "1" && !conversation;
+	const respond = async (path: string, options: { toast?: Html | null; push?: boolean; failed?: boolean } = {}): Promise<Response> => {
+		if (quiet) return new Response(null, { status: options.failed ? 422 : 204, headers: securityHeaders(new Headers()) });
+		if (partial) {
+			if (options.failed) {
+				// The page shows this as a toast through textContent.
+				const text = options.toast
+					? String(options.toast).replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim()
+					: "Something went wrong.";
+				return new Response(text, { status: 422, headers: securityHeaders(new Headers({ "Content-Type": "text/plain; charset=utf-8" })) });
+			}
+			const nav = await navStateFor(ctx, { view, folderId });
+			return htmlResponse(html`${renderNav(ctx, nav)}${renderToast(options.toast ?? null)}`, { headers: { "HX-Push-Url": "false" } });
+		}
+		return respondWithPage(ctx, path, options);
+	};
 	if (ids.length === 0) {
-		return respond(conversation ? stay : returnTo, { toast: html`<span>Select a conversation first.</span>` });
+		return respond(conversation ? stay : returnTo, { toast: html`<span>Select a conversation first.</span>`, failed: true });
 	}
 
 	const snooze = form.get("snooze");
 	if (snooze) {
 		const until = resolveSnoozeTime(String(snooze), String(form.get("snoozeAt") ?? "") || null, timeZoneOf(ctx));
-		if (!until) return respond(conversation ? stay : returnTo, { toast: html`<span>Pick a time in the future.</span>` });
+		if (!until) return respond(conversation ? stay : returnTo, { toast: html`<span>Pick a time in the future.</span>`, failed: true });
 		const targets = await resolveActionTargets(ctx.env, { ...base, action: "snooze" });
-		await setSnooze(ctx.env, ctx.user, targets, until);
+		await setSnooze(ctx.env, writeScope(ctx), targets, until);
 		const undo = { kind: "unsnooze" as const, ids: targets.map((target) => target.id) };
 		return respond(returnTo, {
 			toast: toastWithUndo(`Snoozed until ${formatFullDate(until, timeZoneOf(ctx))}.`, undo, returnTo),
@@ -212,24 +250,24 @@ async function handleAct(ctx: V2Context, form: FormData): Promise<Response> {
 
 	if (action === "star" || action === "unstar") {
 		const targets = await resolveActionTargets(ctx.env, { ...base, action });
-		await setConversationStar(ctx.env, ctx.user, targets, action === "star");
+		await setConversationStar(ctx.env, writeScope(ctx), targets, action === "star");
 		return respond(conversation ? stay : returnTo);
 	}
 
 	const allowed: BulkMessageAction[] = ["archive", "trash", "spam", "inbox", "read", "unread", "folder"];
 	if (!allowed.includes(action as BulkMessageAction)) {
-		return respond(conversation ? stay : returnTo, { toast: html`<span>That action isn't available here.</span>` });
+		return respond(conversation ? stay : returnTo, { toast: html`<span>That action isn't available here.</span>`, failed: true });
 	}
 	const targets = await resolveActionTargets(ctx.env, { ...base, action: action as BulkMessageAction });
 	if (targets.length === 0) {
-		return respond(conversation ? stay : returnTo, { toast: html`<span>Nothing to change.</span>` });
+		return respond(conversation ? stay : returnTo, { toast: html`<span>Nothing to change.</span>`, failed: true });
 	}
 	let undoEntries: UndoEntry[];
 	try {
 		undoEntries = await runAction(ctx.env, ctx.user, targets, action as BulkMessageAction, moveFolder);
 	} catch (error) {
 		if (error instanceof MessageActionError) {
-			return respond(conversation ? stay : returnTo, { toast: html`<span>${error.message}</span>` });
+			return respond(conversation ? stay : returnTo, { toast: html`<span>${error.message}</span>`, failed: true });
 		}
 		throw error;
 	}
@@ -252,11 +290,11 @@ async function handleUndo(ctx: V2Context, form: FormData): Promise<Response> {
 		payload = {};
 	}
 	if (payload.kind === "restore") {
-		await restoreMessages(ctx.env, ctx.user, parseUndoEntries(JSON.stringify(payload.entries ?? [])));
+		await restoreMessages(ctx.env, writeScope(ctx), parseUndoEntries(JSON.stringify(payload.entries ?? [])));
 	} else if (payload.kind === "unsnooze" && Array.isArray(payload.ids)) {
 		const ids = payload.ids.filter((id): id is string => typeof id === "string" && ID.test(id)).slice(0, 500);
 		const targets = ids.map((id) => ({ id, key: id, direction: "inbound" as const, status: "received", folderId: null, read: true, starred: false, createdAt: new Date() }));
-		await setSnooze(ctx.env, ctx.user, targets, null);
+		await setSnooze(ctx.env, writeScope(ctx), targets, null);
 	}
 	return respondWithPage(ctx, returnTo, { toast: html`<span>Action undone.</span>` });
 }
@@ -339,13 +377,14 @@ export async function handleV2Request(request: Request, env: CloudflareEnv): Pro
 		return redirect(location, [cookie(UI_PREFERENCE_COOKIE, to, url)]);
 	}
 
-	const user = await authenticate(env, request);
-	if (!user) {
+	if (method === "POST" && !isSameOrigin(request, url)) return htmlResponse("Forbidden", { status: 403 });
+	const identity = await loadIdentity(env, request);
+	if (!identity) {
 		if (method === "GET") return redirect(`/login`);
 		return htmlResponse("Your session has ended. Sign in again.", { status: 401 });
 	}
-	if (method === "POST" && !isSameOrigin(request, url)) return htmlResponse("Forbidden", { status: 403 });
-	const ctx = await buildContext(env, request, user, url);
+	const { user } = identity;
+	const ctx = buildContext(env, request, user, identity.mailboxes, url);
 
 	if (route.kind === "home") return redirect("/v2/inbox");
 	if (route.kind === "notFound") {
@@ -414,7 +453,7 @@ export async function handleV2Request(request: Request, env: CloudflareEnv): Pro
 			if (message) {
 				const thread = await loadThread(env, { messageId, view: "all", scopeMailboxIds: ctx.scopeMailboxIds });
 				const from = thread?.messages.findIndex((item) => item.id === messageId) ?? -1;
-				if (thread && from >= 0) await markUnreadFrom(env, user, thread.messages.slice(from).map((item) => item.id));
+				if (thread && from >= 0) await markUnreadFrom(env, writeScope(ctx), thread.messages.slice(from).map((item) => item.id));
 			}
 			return respondWithPage(ctx, String(form.get("return") ?? ""), { push: true });
 		}

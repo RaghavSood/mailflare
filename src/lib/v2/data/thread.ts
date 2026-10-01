@@ -5,7 +5,6 @@ import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import type { SessionUser } from "@/lib/auth/types";
 import { getContactDisplayNameMap } from "@/lib/contacts/service";
 import { normalizeEmailAddress } from "@/lib/email/address";
-import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
 import { applyMessageAction } from "@/lib/messages/actions";
 import type { V2Thread, V2ThreadMessage, V2ViewKey } from "../types";
 import { chunk } from "./list-utils";
@@ -176,13 +175,15 @@ export async function runAction(
 	return undo.filter((entry) => changed.has(entry.id));
 }
 
+/**
+ * The mailboxes a signed-in user may change, from the access already loaded for
+ * the request. Writes filter by these in SQL instead of re-checking access per
+ * message.
+ */
+export type WriteScope = { readable: string[]; manageable: string[] };
+
 /** Star the newest message of each conversation, or clear every star in them. */
-export async function setConversationStar(
-	env: CloudflareEnv,
-	user: SessionUser,
-	targets: ActionCandidate[],
-	starred: boolean,
-): Promise<void> {
+export async function setConversationStar(env: CloudflareEnv, scope: WriteScope, targets: ActionCandidate[], starred: boolean): Promise<void> {
 	const newest = new Map<string, ActionCandidate>();
 	for (const target of targets) {
 		const current = newest.get(target.key);
@@ -191,22 +192,16 @@ export async function setConversationStar(
 	const ids = starred
 		? [...newest.values()].map((target) => target.id)
 		: targets.filter((target) => target.starred).map((target) => target.id);
-	await updateManageable(env, user, ids, { starred }, "canRead");
+	await updateScoped(env, scope.readable, ids, { starred });
 }
 
-export async function setSnooze(
-	env: CloudflareEnv,
-	user: SessionUser,
-	targets: ActionCandidate[],
-	until: Date | null,
-): Promise<void> {
+export async function setSnooze(env: CloudflareEnv, scope: WriteScope, targets: ActionCandidate[], until: Date | null): Promise<void> {
 	const ids = targets.filter((target) => target.direction === "inbound" && target.status === "received").map((target) => target.id);
-	await updateManageable(env, user, ids, { snoozedUntil: until }, "canManage");
+	await updateScoped(env, scope.manageable, ids, { snoozedUntil: until });
 }
 
 /** Put messages back the way an undo entry recorded them. */
-export async function restoreMessages(env: CloudflareEnv, user: SessionUser, entries: UndoEntry[]): Promise<void> {
-	const db = getDb(env);
+export async function restoreMessages(env: CloudflareEnv, scope: WriteScope, entries: UndoEntry[]): Promise<void> {
 	const groups = new Map<string, UndoEntry[]>();
 	for (const entry of entries) {
 		const key = JSON.stringify([entry.status, entry.folderId, entry.read]);
@@ -214,55 +209,30 @@ export async function restoreMessages(env: CloudflareEnv, user: SessionUser, ent
 	}
 	for (const group of groups.values()) {
 		const { status, folderId, read } = group[0];
-		const ids = await filterManageable(db, user, group.map((entry) => entry.id), "canManage");
-		for (const part of chunk(ids, 90)) {
-			await db.update(messages).set({ status, folderId, read }).where(inArray(messages.id, part));
-		}
+		await updateScoped(env, scope.manageable, group.map((entry) => entry.id), { status, folderId, read });
 	}
 }
 
 /** Mark the unread inbound messages of an opened conversation read. */
-export async function markRead(env: CloudflareEnv, user: SessionUser, ids: string[]): Promise<void> {
-	await updateManageable(env, user, ids, { read: true }, "canRead", eq(messages.read, false));
+export async function markRead(env: CloudflareEnv, scope: WriteScope, ids: string[]): Promise<void> {
+	await updateScoped(env, scope.readable, ids, { read: true }, eq(messages.read, false));
 }
 
-export async function markUnreadFrom(env: CloudflareEnv, user: SessionUser, ids: string[]): Promise<void> {
-	await updateManageable(env, user, ids, { read: false }, "canRead", eq(messages.direction, "inbound"));
+export async function markUnreadFrom(env: CloudflareEnv, scope: WriteScope, ids: string[]): Promise<void> {
+	await updateScoped(env, scope.readable, ids, { read: false }, eq(messages.direction, "inbound"));
 }
 
-async function filterManageable(
-	db: ReturnType<typeof getDb>,
-	user: SessionUser,
-	ids: string[],
-	level: "canRead" | "canManage",
-): Promise<string[]> {
-	const allowed: string[] = [];
-	const access = new Map<string, boolean>();
-	for (const part of chunk(ids, 90)) {
-		const rows = await db.select({ id: messages.id, mailboxId: messages.mailboxId }).from(messages).where(inArray(messages.id, part));
-		for (const row of rows) {
-			if (!row.mailboxId) continue;
-			if (!access.has(row.mailboxId)) {
-				access.set(row.mailboxId, !!(await getMailboxAccessLevel(db, user, row.mailboxId))?.[level]);
-			}
-			if (access.get(row.mailboxId)) allowed.push(row.id);
-		}
-	}
-	return allowed;
-}
-
-async function updateManageable(
+/** One UPDATE per chunk of ids, limited to the given mailboxes, sent as a single batch. */
+async function updateScoped(
 	env: CloudflareEnv,
-	user: SessionUser,
+	mailboxIds: string[],
 	ids: string[],
 	values: Partial<typeof messages.$inferInsert>,
-	level: "canRead" | "canManage",
 	extra?: ReturnType<typeof eq>,
 ): Promise<void> {
-	if (ids.length === 0) return;
+	if (ids.length === 0 || mailboxIds.length === 0) return;
 	const db = getDb(env);
-	const allowed = await filterManageable(db, user, ids, level);
-	for (const part of chunk(allowed, 90)) {
-		await db.update(messages).set(values).where(and(inArray(messages.id, part), extra));
-	}
+	const updates = chunk(ids, 80).map((part) =>
+		db.update(messages).set(values).where(and(inArray(messages.id, part), inArray(messages.mailboxId, mailboxIds), extra)));
+	await db.batch(updates as [typeof updates[number], ...typeof updates]);
 }

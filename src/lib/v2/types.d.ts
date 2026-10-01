@@ -49,6 +49,7 @@ export type V2Mailbox = {
 	userId: string;
 	signature: string | null;
 	canSend: boolean;
+	canManage: boolean;
 	senderAddresses: string[];
 	catchAllHostnames: string[];
 	domainId: string;
@@ -78,7 +79,6 @@ export type V2Counts = {
 	inbox: number;
 	spam: number;
 	drafts: number;
-	snoozed: number;
 	folders: Map<string, number>;
 };
 

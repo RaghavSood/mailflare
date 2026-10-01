@@ -232,6 +232,13 @@
       "when": 1788850800004,
       "tag": "0032_add_message_envelope",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1788850800005,
+      "tag": "0033_add_conversation_views",
+      "breakpoints": true
     }
   ]
 }

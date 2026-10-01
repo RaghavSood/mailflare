@@ -41,14 +41,14 @@ export async function getUserFromSession(
 	if (!token) return null;
 	const db = getDb(env);
 	const tokenHash = await hashSessionToken(token);
-	const [session] = await db
-		.select()
+	// One round trip: every authenticated request starts here.
+	const [row] = await db
+		.select({ user: users })
 		.from(sessions)
+		.innerJoin(users, eq(users.id, sessions.userId))
 		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, new Date())))
 		.limit(1);
-	if (!session) return null;
-	const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
-	return user ?? null;
+	return row?.user ?? null;
 }
 
 export async function deleteSession(env: CloudflareEnv, token: string): Promise<void> {

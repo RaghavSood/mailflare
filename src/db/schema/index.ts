@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
@@ -253,6 +253,31 @@ export const messages = sqliteTable(
 		index("messages_thread_idx").on(t.mailboxId, t.threadId),
 		index("messages_provider_message_idx").on(t.mailboxId, t.providerMessageId),
 		index("messages_raw_r2_key_idx").on(t.rawR2Key),
+	],
+);
+
+/**
+ * Derived conversation summaries for the v2 lists, maintained by triggers on
+ * messages (migration 0033); application code only reads it. `view` is inbox,
+ * sent, archive, spam, trash, all, starred or folder:<id>.
+ */
+export const conversationViews = sqliteTable(
+	"conversation_views",
+	{
+		mailboxId: text("mailbox_id").notNull().references(() => mailboxes.id, { onDelete: "cascade" }),
+		view: text("view").notNull(),
+		threadKey: text("thread_key").notNull(),
+		latestAt: integer("latest_at", { mode: "timestamp" }).notNull(),
+		latestId: text("latest_id").notNull(),
+		messageCount: integer("message_count").notNull(),
+		unreadCount: integer("unread_count").notNull(),
+		/** Earliest snooze among the conversation's inbox messages; 0 when any is awake. */
+		snoozeMin: integer("snooze_min").notNull().default(0),
+	},
+	(t) => [
+		primaryKey({ columns: [t.mailboxId, t.view, t.threadKey] }),
+		index("conversation_views_list_idx").on(t.mailboxId, t.view, t.latestAt, t.latestId),
+		index("conversation_views_thread_idx").on(t.mailboxId, t.threadKey),
 	],
 );
 
