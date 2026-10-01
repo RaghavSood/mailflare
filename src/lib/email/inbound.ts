@@ -56,11 +56,14 @@ export async function processInboundMessage(
 	}
 
 	if (!decision.mailbox) return;
-	const [stored] = await db.select({ id: messages.id }).from(messages).where(and(
-		eq(messages.mailboxId, decision.mailbox.mailboxId),
-		eq(messages.rawR2Key, payload.rawR2Key),
-	)).limit(1);
-	if (stored) return;
+	// Look up by the raw key alone so SQLite uses its index. Filtering on mailbox_id
+	// too made it walk the mailbox index and read every row (bodies included) to
+	// reach raw_r2_key: seconds per delivery, during which D1 served nothing else.
+	const stored = await db
+		.select({ mailboxId: messages.mailboxId })
+		.from(messages)
+		.where(eq(messages.rawR2Key, payload.rawR2Key));
+	if (stored.some((row) => row.mailboxId === decision.mailbox?.mailboxId)) return;
 
 	const raw = await env.BUCKET.get(payload.rawR2Key);
 	if (!raw) {
