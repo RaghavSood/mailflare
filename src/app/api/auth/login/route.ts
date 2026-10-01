@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { homePathForRequest } from "@/lib/v2/preference";
 import { eq } from "drizzle-orm";
 import { getEnv } from "@/lib/cloudflare";
 import { getDb } from "@/db";
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
 	const response = NextResponse.json({
 		ok: true,
 		token,
-		redirect: "/inbox",
+		redirect: homePathForRequest(request),
 	});
 	response.headers.set("Cache-Control", "no-store");
 	response.cookies.set(SESSION_COOKIE, token, {

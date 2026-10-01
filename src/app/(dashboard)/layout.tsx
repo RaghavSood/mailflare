@@ -13,6 +13,7 @@ import { LicenseIndicator } from "@/components/license-indicator";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { SidebarProvider } from "@/components/sidebar-state";
 import { ShortcutsProvider } from "@/components/shortcuts";
+import { UiSwitchLink } from "@/components/ui-switch-link";
 
 export default function DashboardLayout({
   children,
@@ -33,6 +34,7 @@ export default function DashboardLayout({
                   <div className="flex min-h-0 min-w-0 flex-col">
                     <header className="flex h-16 w-full shrink-0 items-center gap-3 pr-4 text-sm">
                       <MailSearchInput />
+                      <UiSwitchLink />
                       <Link
                         href="/settings/account"
                         className="flex h-10 w-10 items-center justify-center rounded-full text-neutral-600 hover:bg-neutral-200"

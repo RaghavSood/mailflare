@@ -99,6 +99,15 @@ The app reaches every platform service through `getEnv()` (`src/lib/cloudflare.t
 
 `messages_fts` (migration 0030) is an external-content FTS5 table over `messages`; three triggers in the same migration keep it in sync on insert, update and delete, so no application code touches the index. `buildSearchConditions` in `src/lib/search/conditions.ts` turns the Gmail-style grammar (`src/lib/search/query-utils.ts`) into a `rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)` predicate plus plain column filters. Two consequences: the bootstrap SQL in `src/lib/setup/migration.ts` is split with `splitSqlStatements`, which keeps trigger bodies whole; and the backup coverage check skips `messages_fts%`, since the shadow tables are derived and repopulate on restore. `wrangler d1 export` does not work on databases with virtual tables; the app's own JSON backup is unaffected.
 
+### The v2 interface is server-rendered HTML
+
+`/v2` is a second, gated interface: `src/app/v2/[[...segments]]/route.ts` only delegates to `handleV2Request` (`src/lib/v2/handler.ts`), which renders whole pages as HTML strings (no React) and answers POST actions with the next page to show. htmx (vendored at `public/v2-assets/htmx.min.js`) boosts links and forms and swaps only `#main`, refreshing `#nav` and `#toast` out of band, so the composer dock outside `#main` survives navigation. `public/v2-assets/app.js` is plain JS with no build step: Gmail keyboard map, selection, frame sizing, composer autosave. Bump `ASSET_VERSION` in `src/lib/v2/render/layout.ts` when changing those assets.
+
+- Templates go through `html` in `src/lib/v2/html.ts`, which escapes every value; `raw` is only for markup built in `src/lib/v2`. Always quote attributes (`attr="${value}"`).
+- Email HTML is never sanitised server-side (there is no parser on Workers); it renders in an `<iframe sandbox="allow-same-origin allow-popups…">` srcdoc with its own CSP, after `neutralizeEmailHtml` renames active tags. Pages send a strict CSP (`script-src 'self'`), which is what keeps HTML in the contenteditable composer inert. Reply and forward quotes are stored as escaped text for the same reason.
+- Data access is in `src/lib/v2/data/` with lean column lists (the classic list API loads every body). Lists are always grouped by conversation; `resolveActionTargets` + `pickActionTargets` decide which messages an action on a conversation touches. Mutations reuse `applyMessageAction` (`src/lib/messages/actions.ts`), shared with `/api/messages/bulk`.
+- Auth is the `ep_session` cookie; POSTs must pass the same-origin check. Preferences live in cookies: `mf_theme`, `mf_mb` (mailbox scope), `mf_tz` (set by app.js), `mf_ui` (last interface chosen via `/v2/switch`, which `homePathForRequest` uses for the post-login redirect).
+
 ### Access control
 
 Two independent auth surfaces:
