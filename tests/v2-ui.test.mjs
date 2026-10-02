@@ -87,8 +87,15 @@ test("email HTML loses active tags before it reaches the sandboxed frame", () =>
 	const dirty = `<META http-equiv="refresh" content="0;url=https://evil"><base href="https://evil/"><script>alert(1)</script><iframe src=x></iframe><form action=x><p>Hi</p></form><scripted>ok</scripted>`;
 	const clean = v2.neutralizeEmailHtml(dirty);
 	assert.doesNotMatch(clean, /<(meta|base|script|iframe|form)[\s>]/i);
-	assert.match(clean, /<x-blocked-META http-equiv/);
+	assert.doesNotMatch(clean, /refresh|evil\/"/);
+	assert.match(clean, /<x-blocked-script>alert\(1\)<\/x-blocked-script>/);
+	assert.match(clean, /<x-blocked-form action=x><p>Hi<\/p><\/x-blocked-form>/);
 	assert.match(clean, /<scripted>ok<\/scripted>/);
+	// Void tags are removed, not renamed: a renamed one would wrap (and hide) the rest of the email.
+	assert.equal(
+		v2.neutralizeEmailHtml(`<head><meta name="viewport" content="a>b" /><link rel="stylesheet" href="https://x/s.css"></head><body><p>Shown</p></body>`),
+		`<head><link rel="stylesheet" href="https://x/s.css"></head><body><p>Shown</p></body>`,
+	);
 	const doc = v2.buildMailFrameDocument("<p>Hi</p>");
 	assert.match(doc, /^<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none';/);
 	assert.match(doc, /<base target="_blank">/);

@@ -2,15 +2,19 @@ import { escapeHtml } from "../html";
 
 /**
  * Email HTML is shown in an iframe sandboxed without scripts, forms or
- * top-level navigation, with its own CSP. These tags are also neutralised
- * first (renamed to inert elements and hidden) so a refresh, base URL or
- * embedded document cannot take over the frame.
+ * top-level navigation, with its own CSP. Before that, tags that could take
+ * over the frame are made inert. Void tags (no closing tag) are removed: a
+ * renamed void tag would become an ordinary element and swallow everything
+ * after it. Container tags are renamed so their closing tags still match.
  */
-const BLOCKED_TAGS = ["script", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "meta", "base", "link", "noscript", "template", "portal"];
-const BLOCKED_PATTERN = new RegExp(`<(/?)(${BLOCKED_TAGS.join("|")})(?=[\\s/>])`, "gi");
+const REMOVED_VOID_TAGS = ["meta", "base", "embed", "frame"];
+const RENAMED_TAGS = ["script", "iframe", "frameset", "object", "applet", "form", "noscript", "template", "portal"];
+// A tag with attributes, quoted values allowed to contain ">".
+const VOID_PATTERN = new RegExp(`<(?:${REMOVED_VOID_TAGS.join("|")})(?=[\\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>`, "gi");
+const RENAMED_PATTERN = new RegExp(`<(/?)(${RENAMED_TAGS.join("|")})(?=[\\s/>])`, "gi");
 
 export function neutralizeEmailHtml(value: string): string {
-	return value.replace(BLOCKED_PATTERN, "<$1x-blocked-$2");
+	return value.replace(VOID_PATTERN, "").replace(RENAMED_PATTERN, "<$1x-blocked-$2");
 }
 
 /** Inline images reference attachments by Content-ID; point them at the stored files. */
@@ -41,7 +45,8 @@ img{max-width:100%;height:auto}
 table{max-width:100%}
 pre{white-space:pre-wrap}
 a{color:#1a5fd0}
-[class^="x-blocked-"],x-blocked-script,x-blocked-iframe,x-blocked-frame,x-blocked-frameset,x-blocked-object,x-blocked-embed,x-blocked-applet,x-blocked-form,x-blocked-meta,x-blocked-base,x-blocked-link,x-blocked-noscript,x-blocked-template,x-blocked-portal{display:none!important}
+x-blocked-script,x-blocked-iframe,x-blocked-frameset,x-blocked-object,x-blocked-applet,x-blocked-noscript,x-blocked-template,x-blocked-portal{display:none!important}
+x-blocked-form{display:contents}
 .mf-quote-hidden{display:none!important}
 `;
 
