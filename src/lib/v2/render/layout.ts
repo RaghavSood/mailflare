@@ -4,7 +4,7 @@ import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "1";
+export const ASSET_VERSION = "2";
 
 const HTMX_CONFIG = JSON.stringify({
 	includeIndicatorStyles: false,

@@ -279,18 +279,21 @@
 	}
 
 
-	// The toolbar and its menus submit the list form; send those through actOnList too.
+	// The toolbars and their menus submit the list or thread form from buttons
+	// outside it (form="..."). htmx only notices clicks inside a form, so it would
+	// post without the button's value; send them through actOnList/actOnThread.
 	document.addEventListener("submit", (event) => {
 		const form = event.target;
-		if (!(form instanceof HTMLFormElement) || form.id !== "list-form") return;
+		if (!(form instanceof HTMLFormElement) || (form.id !== "list-form" && form.id !== "thread-form")) return;
 		const submitter = event.submitter;
 		if (!submitter?.name) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		const values = { [submitter.name]: submitter.value };
-		if (submitter.name === "snooze") values.snoozeAt = form.querySelector("[name=snoozeAt]")?.value ?? $("[name=snoozeAt][form=list-form]")?.value ?? "";
+		if (submitter.name === "snooze") values.snoozeAt = form.querySelector("[name=snoozeAt]")?.value ?? $(`[name=snoozeAt][form=${form.id}]`)?.value ?? "";
 		closeMenus();
-		actOnList(values);
+		if (form.id === "list-form") actOnList(values);
+		else actOnThread(values);
 	}, true);
 
 	function actOnThread(values) {
