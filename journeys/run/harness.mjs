@@ -199,11 +199,15 @@ export class Device {
 		return /mInputShown=true/.test(out);
 	}
 
-	/** Device offline the way the journeys mean it: Airplane mode, plus the server cut off (see startRelay). */
-	async setOffline(offline) {
-		if (offline) this.setRelayOffline(true);
+	/**
+	 * Device offline the way the journeys mean it: Airplane mode, plus the server cut off (see startRelay).
+	 * `serverReachable: false` with `offline: false` turns Airplane mode off but keeps the server cut off,
+	 * the "server not reachable yet" moment after a reconnect.
+	 */
+	async setOffline(offline, { serverReachable = !offline } = {}) {
+		if (!serverReachable) this.setRelayOffline(true);
 		await this.shell(`cmd connectivity airplane-mode ${offline ? "enable" : "disable"}`);
-		if (!offline) {
+		if (serverReachable) {
 			this.setRelayOffline(false);
 			await this.adb("reverse", "tcp:3000", `tcp:${this.relayPort}`);
 		}
@@ -252,10 +256,11 @@ export class Device {
 	 * Turns Airplane mode on or off while Quick Settings is open. This stands in for tapping the tile,
 	 * whose place differs between images (the CI image opens the shade with one row of tiles), with the
 	 * same system setting: `cmd connectivity airplane-mode`. Turning it on also cuts the server off
-	 * (Airplane mode does not cut the adb reverse tunnel; see startRelay); turning it off restores it.
+	 * (Airplane mode does not cut the adb reverse tunnel; see startRelay); turning it off restores it,
+	 * unless `{ serverReachable: false }` is given (see setOffline).
 	 */
-	async setAirplaneMode(on) {
-		await this.setOffline(on);
+	async setAirplaneMode(on, options) {
+		await this.setOffline(on, options);
 		await waitFor(async () => (await this.airplaneMode()) === on, { timeout: 5_000, message: `Airplane mode to turn ${on ? "on" : "off"}` });
 		if (on) {
 			// Confirm from the page that the server really is out of reach.

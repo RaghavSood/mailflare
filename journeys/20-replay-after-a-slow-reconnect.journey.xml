@@ -1,0 +1,19 @@
+<journey name="Apply an offline action when the server answers a little after the connection returns">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with at least two conversations in the list, the first of them newer than any conversation in Archive (a message has just arrived), and the service worker has been registered by an earlier visit.
+		An action taken offline goes to the outbox. When Airplane mode is turned off, the device reports being online before the Mailflare server can be reached ("server not reachable yet", as when Wi-Fi is up before its routes are): on an emulator the `adb reverse` tunnel to the server stays cut, with any connection already open through it, for a few seconds after Airplane mode is off. The first try to replay the action fails; the page keeps trying and applies it once the server answers, without a reload.
+	</description>
+	<actions>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings</action>
+		<action>Swipe the first conversation row from the left edge of the screen towards the right edge</action>
+		<action>Verify that the swiped row is no longer in the list and the banner at the top reads "Offline" followed by "1 change waiting"</action>
+		<action>Keep the Mailflare server unreachable (on an emulator, leave the `adb reverse` tunnel to the server cut), swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 5 seconds after the device is back online</action>
+		<action>Verify that the banner at the top reads "Syncing" followed by "1 change waiting"</action>
+		<action>Make the Mailflare server reachable again and wait 30 seconds</action>
+		<action>Verify that the banner is gone and the swiped conversation is still not in the inbox list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Archive" in the drawer</action>
+		<action>Verify that the conversation swiped while offline is listed in Archive</action>
+	</actions>
+</journey>

@@ -88,6 +88,19 @@
 		return Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** Math.min(step, 16));
 	}
 
+	/**
+	 * How long a page waits before draining the outbox again after `result`, or
+	 * null for not at all. Only a drain that could not reach the server while the
+	 * browser says it is online is retried (the network can be up a moment before
+	 * the server is): a server error already counts against the entry's attempts,
+	 * so retrying it here would drop the entry within seconds. A cached copy's own
+	 * reload tries drain first, so it gets no second schedule.
+	 */
+	function drainRetryDelay(result, { online, cached = false, attempt = 0 }) {
+		if (!online || cached || !result || result.signedOut || !result.remaining || !result.unreachable) return null;
+		return retryDelay(attempt);
+	}
+
 	/* ---------- what may be queued ---------- */
 
 	/** Forward actions only: undo depends on server state and never queues. */
@@ -263,12 +276,12 @@
 
 	/**
 	 * Drain the outbox in order. Stops at the first entry that cannot reach the
-	 * server, so later actions never overtake earlier ones. Entries of any other
+	 * server (result.unreachable), so later actions never overtake earlier ones. Entries of any other
 	 * user are never sent; discarding them is adoptUser's and sign-out's job,
 	 * not that of a stale tab that has not noticed the switch.
 	 */
 	async function drain(store, { fetch: fetchFn, user, onDropped = () => {}, onDraftId = () => {} }) {
-		const result = { sent: 0, dropped: 0, remaining: 0, signedOut: false };
+		const result = { sent: 0, dropped: 0, remaining: 0, signedOut: false, unreachable: false };
 		if (!user) return result;
 		const pending = async () => (await store.all()).filter((entry) => entry.user === user).sort(byQueueOrder);
 		let entries = await pending();
@@ -279,7 +292,10 @@
 				for (const item of withDraftId(entries.slice(1), entry.key, outcome.draftId)) await store.put(item);
 				onDraftId(entry.key, outcome.draftId);
 			}
-			if (outcome.outcome === "offline") break;
+			if (outcome.outcome === "offline") {
+				result.unreachable = true;
+				break;
+			}
 			if (outcome.outcome === "signedOut") {
 				result.signedOut = true;
 				break;
@@ -429,6 +445,7 @@
 		overLimit,
 		bannerText,
 		retryDelay,
+		drainRetryDelay,
 		queueKind,
 		resolveSnoozePreset,
 		prepareFields,

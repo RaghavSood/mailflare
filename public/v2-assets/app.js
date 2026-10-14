@@ -1716,8 +1716,9 @@
 		socket.addEventListener("open", () => {
 			attempt = 0;
 			heartbeat = setInterval(() => socket.readyState === 1 && socket.send("ping"), 25000);
-			// The server is back: a cached copy need not wait for its next try.
-			syncCachedPage({ restart: true });
+			// The server is back: a cached copy need not wait for its next try, nor changes waiting on a live page.
+			if (body.dataset.cachedAt) syncCachedPage({ restart: true });
+			else if (pendingCount) drainOutbox();
 		});
 		socket.addEventListener("message", (event) => {
 			try {
@@ -1967,6 +1968,9 @@
 	const currentUser = body.dataset.user ?? "";
 	let draining = null;
 	let refreshAfterDrain = false;
+	/** The next try to drain while online with the server out of reach, and how many came before it. */
+	let drainTimer = 0;
+	let drainTry = 0;
 	let pendingCount = 0;
 	/** Whether the server answered the last try to reload a cached copy: "unknown", "down" or "up". */
 	let reach = "unknown";
@@ -2045,6 +2049,9 @@
 		}
 		requestOutboxSync();
 		await updatePending();
+		// Queued although the browser is online: the server is out of reach, so keep trying.
+		cancelDrainRetry();
+		scheduleDrainRetry({ remaining: 1, unreachable: true });
 		return true;
 	}
 
@@ -2208,6 +2215,23 @@
 		return true;
 	}
 
+	/** After a drain that could not reach the server although the browser is online: try again, backing off. */
+	function scheduleDrainRetry(result) {
+		clearTimeout(drainTimer);
+		const delay = Offline ? Offline.drainRetryDelay(result, { online: navigator.onLine, cached: Boolean(body.dataset.cachedAt), attempt: drainTry }) : null;
+		if (delay === null) {
+			drainTry = 0;
+			return;
+		}
+		drainTry += 1;
+		drainTimer = setTimeout(drainOutbox, delay);
+	}
+
+	function cancelDrainRetry() {
+		clearTimeout(drainTimer);
+		drainTry = 0;
+	}
+
 	/** Replay the outbox, then reload what is on screen so it shows the result. */
 	function drainOutbox() {
 		if (!Offline || !currentUser || !navigator.onLine) return Promise.resolve(null);
@@ -2228,6 +2252,7 @@
 		return draining.then(async (result) => {
 			draining = null;
 			await updatePending();
+			scheduleDrainRetry(result);
 			if (result?.signedOut) {
 				await signedOut();
 				return result;
@@ -2507,6 +2532,7 @@
 
 	window.addEventListener("online", () => {
 		reach = "unknown";
+		cancelDrainRetry();
 		updateConnectivity();
 		if (body.dataset.cachedAt) return syncCachedPage({ restart: true });
 		drainOutbox().then((result) => {
@@ -2515,6 +2541,7 @@
 	});
 	window.addEventListener("offline", () => {
 		clearTimeout(cachedTimer);
+		cancelDrainRetry();
 		reach = "unknown";
 		updateConnectivity();
 	});

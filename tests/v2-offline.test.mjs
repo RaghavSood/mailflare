@@ -151,6 +151,19 @@ test("tries to reload a cached copy back off from 1.5 s to a minute", () => {
 	assert.equal(Offline.retryDelay(undefined), 1500);
 });
 
+test("a page drains again, backing off, only while online with the server out of reach", () => {
+	const unreachable = { sent: 0, dropped: 0, remaining: 1, signedOut: false, unreachable: true };
+	const next = (result, options) => Offline.drainRetryDelay(result, { online: true, ...options });
+	assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 20].map((attempt) => next(unreachable, { attempt })), [1500, 3000, 6000, 12000, 24000, 48000, 60000, 60000], "the cached copy's backoff, capped at a minute");
+	assert.equal(next(unreachable), 1500, "the first try");
+	assert.equal(next(unreachable, { online: false }), null, "offline: the online event replays");
+	assert.equal(next(unreachable, { cached: true }), null, "a cached copy's reload tries drain first");
+	assert.equal(next({ ...unreachable, remaining: 0 }), null, "nothing left");
+	assert.equal(next({ ...unreachable, unreachable: false }), null, "the server answered with an error: it counts against the entry, later");
+	assert.equal(next({ ...unreachable, signedOut: true }), null, "signed out");
+	assert.equal(next(null), null, "the drain itself failed");
+});
+
 /** An in-memory outbox and a scripted server. */
 function harness(entries, routes) {
 	const store = new Map(entries.map((entry) => [entry.id, structuredClone(entry)]));
@@ -276,6 +289,7 @@ test("a queued discard asks the server to discard by id and composer key, and ne
 	});
 	let result = await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a" });
 	assert.deepEqual({ sent: result.sent, remaining: result.remaining }, { sent: 0, remaining: 1 }, "kept until the server can be reached");
+	assert.equal(result.unreachable, true, "stopped because the server could not be reached");
 	online = true;
 	result = await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a" });
 	assert.deepEqual(h.calls.map((call) => [call.path, field(call, "draftId"), field(call, "composeKey")]), [
@@ -283,11 +297,13 @@ test("a queued discard asks the server to discard by id and composer key, and ne
 		["/v2/draft/discard", "msg_d", "k1"],
 	]);
 	assert.deepEqual({ sent: result.sent, remaining: result.remaining }, { sent: 1, remaining: 0 });
+	assert.equal(result.unreachable, false);
 
 	// A server error is retried later, not dropped.
 	const failing = harness([entry("e2", "discard", [["draftId", ""], ["composeKey", "k2"]], { key: "k2" })], { "/v2/draft/discard": { status: 503 } });
 	result = await Offline.drain(failing.outbox, { fetch: failing.fetch, user: "usr_a" });
 	assert.equal(result.remaining, 1);
+	assert.equal(result.unreachable, false, "the server answered");
 	assert.equal(failing.store.get("e2").attempts, 1);
 
 	// A save of the same composer replayed first (queued before the discard) hands the discard its draft id.
@@ -308,5 +324,5 @@ test("a signed-out replay stops and reports it, keeping nothing for anyone else"
 	const result = await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a" });
 	assert.equal(result.signedOut, true);
 	assert.equal(h.store.size, 1, "the page purges the outbox when it learns this");
-	assert.deepEqual(plain(await Offline.drain(h.outbox, { fetch: h.fetch, user: "" })), { sent: 0, dropped: 0, remaining: 0, signedOut: false }, "no user, no replay");
+	assert.deepEqual(plain(await Offline.drain(h.outbox, { fetch: h.fetch, user: "" })), { sent: 0, dropped: 0, remaining: 0, signedOut: false, unreachable: false }, "no user, no replay");
 });
