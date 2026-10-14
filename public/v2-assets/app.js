@@ -536,6 +536,22 @@
 		return { name: "", email: text.trim() };
 	}
 
+	/** Keep one history entry while a sheet or the drawer is open: push it, drop it once nothing is open, or leave it. */
+	function sheetHistoryStep(open, onEntry, busy) {
+		if (open && !onEntry) return "push";
+		if (!open && onEntry && !busy) return "back";
+		return null;
+	}
+
+	/** What a popstate means for sheets; null hands it to htmx's history restore. */
+	function sheetPopstate({ fromEntry, toEntry, samePage, open, canGoForward }) {
+		// Forward onto an entry whose sheet has since closed: step over it.
+		if (toEntry) return open ? "stay" : canGoForward ? "forward" : "back";
+		if (!fromEntry) return null;
+		// Back from a sheet's entry stays on the page; a jump further back also restores that page.
+		return samePage ? "close" : "close-restore";
+	}
+
 	/* pure:end */
 
 	const coarsePointer = window.matchMedia("(pointer: coarse)");
@@ -567,6 +583,116 @@
 		open.forEach((panel) => (panel.hidden = true));
 		event.stopImmediatePropagation();
 	}, true);
+
+	/* Back closes a sheet or the drawer on phones. Opening one pushes an entry for the
+	   same URL; Back pops it and only closes. Closing any other way (X, scrim, Escape, an
+	   item) steps back off the entry, and a boosted navigation takes the entry over, so
+	   none are left behind. Wider screens never get an entry. */
+
+	let onSheetEntry = false;
+	let sheetHref = "";
+	let sheetBackPending = false;
+	let htmxRequests = 0;
+
+	const sheetOpen = () => narrowScreen.matches && (body.classList.contains("nav-open") || !!$("#main details.menu[open], #main .msg-details:not([hidden])"));
+
+	function closeSheets() {
+		closeNav();
+		closeMenus();
+		$$("#main .msg-details:not([hidden])").forEach((panel) => (panel.hidden = true));
+	}
+
+	function syncSheetHistory() {
+		// Wait for requests in flight: one may still put a page into this entry.
+		const step = sheetHistoryStep(sheetOpen(), onSheetEntry, sheetBackPending || htmxRequests > 0);
+		if (step === "push") {
+			// htmx marks the page's own entry for restoring when it navigates away; once the
+			// sheet's entry is on top it would mark that one instead, so mark the page's now.
+			if (!history.state?.htmx) history.replaceState({ htmx: true }, "");
+			history.pushState({ mfSheet: true }, "");
+			onSheetEntry = true;
+			sheetHref = location.href;
+		} else if (step === "back") {
+			sheetBackPending = true;
+			history.back();
+		}
+	}
+
+	/** Returns true when the popstate was only about a sheet, so htmx must not restore the page. */
+	function onSheetPopstate(event) {
+		const action = sheetPopstate({
+			fromEntry: onSheetEntry,
+			toEntry: event.state?.mfSheet === true,
+			samePage: location.href === sheetHref,
+			open: sheetOpen(),
+			canGoForward: window.navigation?.canGoForward === true,
+		});
+		sheetBackPending = false;
+		if (action === null) return false;
+		if (action === "close" || action === "close-restore") {
+			onSheetEntry = false;
+			closeSheets();
+			return action === "close";
+		}
+		onSheetEntry = true;
+		sheetHref = location.href;
+		if (action === "forward") history.forward();
+		else if (action === "back") {
+			sheetBackPending = true;
+			history.back();
+		}
+		return true;
+	}
+
+	function setupSheetHistory() {
+		// htmx sets window.onpopstate (its history restore) from a DOMContentLoaded listener
+		// added before this one, so wrap it there; a deferred script runs too early.
+		const restore = window.onpopstate;
+		window.onpopstate = (event) => {
+			if (!onSheetPopstate(event)) restore?.call(window, event);
+		};
+		onSheetEntry = history.state?.mfSheet === true;
+		sheetHref = location.href;
+		syncSheetHistory();
+		new MutationObserver(syncSheetHistory).observe(body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "open", "hidden"] });
+	}
+	if (document.readyState === "complete") setupSheetHistory();
+	else document.addEventListener("DOMContentLoaded", setupSheetHistory);
+	narrowScreen.addEventListener("change", syncSheetHistory);
+	window.addEventListener("pageshow", (event) => {
+		if (!event.persisted) return;
+		onSheetEntry = history.state?.mfSheet === true;
+		sheetHref = location.href;
+		syncSheetHistory();
+	});
+
+	document.addEventListener("htmx:beforeSend", (event) => {
+		const xhr = event.detail.xhr;
+		if (!xhr) return;
+		htmxRequests++;
+		xhr.addEventListener("loadend", () => {
+			htmxRequests--;
+			setTimeout(syncSheetHistory, 0);
+		}, { once: true });
+	});
+
+	// A page opened from a sheet replaces the sheet's entry instead of stacking on it.
+	document.addEventListener("htmx:beforeHistoryUpdate", (event) => {
+		const update = event.detail.history;
+		if (!onSheetEntry || !update?.type) return;
+		update.type = "replace";
+		onSheetEntry = false;
+		closeSheets();
+	});
+
+	// The same for full-page links (Settings, Switch to classic).
+	document.addEventListener("click", (event) => {
+		if (!onSheetEntry || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+		if (!link || link.target || link.hasAttribute("download") || link.origin !== location.origin) return;
+		event.preventDefault();
+		location.replace(link.href);
+	});
 
 	/* Swipe a list row right to archive (or move back to the Inbox) and left to delete,
 	   using the same actions as the row's hover buttons, so each view keeps its rules. */
@@ -2060,7 +2186,9 @@
 		const config = event.detail.requestConfig;
 		if (navigator.onLine || config?.verb !== "get" || !config.boosted) return;
 		event.preventDefault();
-		location.href = new URL(config.path, location.href).href;
+		const href = new URL(config.path, location.href).href;
+		if (onSheetEntry) location.replace(href);
+		else location.href = href;
 	});
 
 	// Boosted pages never pass through the worker's cache; hand it the documents.

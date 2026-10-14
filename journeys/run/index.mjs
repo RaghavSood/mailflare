@@ -188,7 +188,18 @@ async function runJourney(journey) {
 		if (!(await serverUp())) throw new Error(`the server on host port ${device.hostPort} is not answering /login (see wrangler.log)`);
 		await networkUp();
 		await chromeInFront();
-		if (script.setup) await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+		if (script.setup) {
+			try {
+				await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+			} catch (error) {
+				// Setup is not a journey action: if it failed because the server went away (wrangler dev
+				// restarting, see journeys/ci/server.sh), wait for it and set up once more.
+				log(`  setup failed (${error.message.split("\n")[0]}); waiting for the server and setting up again`);
+				if (!(await serverUp())) throw error;
+				await chromeInFront();
+				await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+			}
+		}
 	} catch (error) {
 		result.error = `setup: ${error.message}`;
 		log(`  ❌ setup: ${error instanceof TypeError || error instanceof ReferenceError ? error.stack : error.message}`);

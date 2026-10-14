@@ -1,15 +1,10 @@
-import { APP, expect } from "./harness.mjs";
+import { APP, expect, fail } from "./harness.mjs";
 
 const FOLDERS = ["Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "All mail", "Spam", "Trash"];
 
 const listHeading = (device) => device.eval(() => [...document.querySelectorAll(".tb-title")].map((el) => window.__j.text(el)).find(Boolean) ?? null);
 
 const journey = {
-	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
-	knownIssue: {
-		step: "Verify that the drawer is closed and the list heading still reads \"Sent\"",
-		issue: "#19: Back with the drawer open leaves the list instead of closing the drawer",
-	},
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		["Tap the menu button (three horizontal lines) at the top left of the screen", ({ device }) => device.tap("[data-nav-toggle]", { effect: () => document.body.classList.contains("nav-open") })],
@@ -56,6 +51,15 @@ const journey = {
 				expect(page.url() === `${APP}/v2/sent`, `Back left the Sent list: the page is now ${page.url()}`);
 				const heading = await listHeading(device);
 				expect(heading === "Sent", `the list heading reads "${heading}"`);
+			},
+		],
+		["Press the Android Back button once more", ({ device }) => device.back()],
+		[
+			'Verify that the list heading reads "Inbox"',
+			async ({ device }) => {
+				await device.until(() => location.pathname === "/v2/inbox" && [...document.querySelectorAll(".tb-title")].some((el) => window.__j.shown(el) && window.__j.text(el) === "Inbox"), null, { message: 'the "Inbox" list heading after Back' }).catch(async (error) => {
+					fail(`${error.message}; the page is ${(await device.page()).url()}, heading "${await listHeading(device)}"`);
+				});
 			},
 		],
 	],

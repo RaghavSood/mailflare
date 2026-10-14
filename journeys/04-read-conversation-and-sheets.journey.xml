@@ -10,9 +10,15 @@
 		<action>Verify that a panel slides up from the bottom of the screen showing "from:", "to:", "date:" and "subject:" details</action>
 		<action>Tap the close (X) button at the top right of that panel</action>
 		<action>Verify that the panel is gone and the conversation is still shown</action>
+		<action>Tap the small down-arrow next to "to me" again</action>
+		<action>Verify that the panel with "from:", "to:", "date:" and "subject:" details is shown at the bottom of the screen again</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the panel is gone and the same conversation is still shown, with its subject heading visible</action>
 		<action>Tap the three-dot button to the right of the message date</action>
 		<action>Verify that a panel slides up from the bottom of the screen listing "Reply", "Reply all", "Forward" and "Mark unread from here"</action>
 		<action>Press the Android Back button once</action>
 		<action>Verify that the bottom panel is closed and the same conversation is still shown, with its subject heading visible</action>
+		<action>Press the Android Back button once more</action>
+		<action>Verify that the inbox list is shown</action>
 	</actions>
 </journey>

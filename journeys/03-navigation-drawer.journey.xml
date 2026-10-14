@@ -12,5 +12,7 @@
 		<action>Tap the menu button at the top left of the screen to open the drawer again</action>
 		<action>Press the Android Back button once</action>
 		<action>Verify that the drawer is closed and the list heading still reads "Sent"</action>
+		<action>Press the Android Back button once more</action>
+		<action>Verify that the list heading reads "Inbox"</action>
 	</actions>
 </journey>

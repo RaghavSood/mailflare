@@ -1,4 +1,4 @@
-import { expect } from "./harness.mjs";
+import { expect, fail } from "./harness.mjs";
 
 // A bottom sheet: fixed to the bottom edge of the screen and on screen.
 const SHEET = (selector) => {
@@ -14,11 +14,6 @@ const threadState = () => {
 };
 
 const journey = {
-	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
-	knownIssue: {
-		step: "Verify that the bottom panel is closed and the same conversation is still shown, with its subject heading visible",
-		issue: "#19: Back with a bottom sheet open leaves the conversation",
-	},
 	setup: ({ device }) => device.startSignedIn(),
 	steps: [
 		[
@@ -77,6 +72,28 @@ const journey = {
 			},
 		],
 		[
+			'Tap the small down-arrow next to "to me" again',
+			({ device }) => device.tap(".msg.is-last .msg-recipients [data-details]", { effect: () => [...document.querySelectorAll(".msg-details")].some((el) => !el.hidden && el.textContent.trim()), effectTimeout: 6_000 }),
+		],
+		[
+			'Verify that the panel with "from:", "to:", "date:" and "subject:" details is shown at the bottom of the screen again',
+			async ({ device }) => {
+				const text = await device.until(SHEET, ".msg-details:not([hidden])", { message: "the details sheet at the bottom of the screen" });
+				for (const label of ["from:", "to:", "date:", "subject:"]) expect(text.toLowerCase().includes(label), `the details sheet does not show "${label}"`);
+			},
+		],
+		["Press the Android Back button once", ({ device }) => device.back()],
+		[
+			"Verify that the panel is gone and the same conversation is still shown, with its subject heading visible",
+			async ({ device, state }) => {
+				await device.until(() => ![...document.querySelectorAll(".msg-details")].some((el) => !el.hidden && window.__j.visible(el)), null, { timeout: 5_000, message: "the details sheet to close" }).catch(async (error) => {
+					fail(`${error.message}; page now ${JSON.stringify(await device.eval(threadState).catch(() => null))}`);
+				});
+				const now = await device.eval(threadState);
+				expect(now.subject === state.subject, `Back left the conversation: the page is now ${now.path}${now.subject ? ` ("${now.subject}")` : ""}`);
+			},
+		],
+		[
 			"Tap the three-dot button to the right of the message date",
 			({ device }) => device.tap('.msg.is-last details[data-menu="message"] > summary', { effect: () => !!document.querySelector('.msg.is-last details[data-menu="message"][open]') }),
 		],
@@ -98,6 +115,11 @@ const journey = {
 				const now = await device.eval(threadState);
 				expect(now.subject === state.subject, `Back left the conversation: the page is now ${now.path}${now.subject ? ` ("${now.subject}")` : ""}`);
 			},
+		],
+		["Press the Android Back button once more", ({ device }) => device.back()],
+		[
+			"Verify that the inbox list is shown",
+			({ device }) => device.until(() => location.pathname === "/v2/inbox" && window.__j.byText(".tb-title", "Inbox") && [...document.querySelectorAll("li[data-row]")].some(window.__j.shown), null, { timeout: 10_000, message: "the inbox list after Back" }),
 		],
 	],
 };

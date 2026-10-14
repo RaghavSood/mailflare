@@ -6,8 +6,8 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 |---|---|
 | `01-sign-in-lands-in-v2` | Signed-out `/v2/inbox` → sign in → back on `/v2/inbox` (`mf_ui`), phone layout |
 | `02-install-and-launch-as-app` | Chrome install prompt, home-screen icon, standalone launch (manifest, icons) |
-| `03-navigation-drawer` | Drawer folders, no keyboard-shortcut entry on touch, Back closes the drawer |
-| `04-read-conversation-and-sheets` | Conversation view, details and ⋮ bottom sheets, Back closes a sheet |
+| `03-navigation-drawer` | Drawer folders, no keyboard-shortcut entry on touch, Back closes the drawer and leaves no extra history entry |
+| `04-read-conversation-and-sheets` | Conversation view, details and ⋮ bottom sheets, Back closes either sheet and then leaves the conversation |
 | `05-swipe-to-trash-undo-and-archive` | Row swipes, Undo, Archive |
 | `06-pull-to-refresh` | In-app pull to refresh, no full reload |
 | `07-compose-and-send` | Composer with the on-screen keyboard, contact suggestion chips, send |
@@ -128,5 +128,7 @@ Push delivery is not a journey, because it needs mail sent from outside the devi
 | 10 | ✅ |
 | 11 | ✅ |
 | 12 | ✅ |
+
+With the fix for #19 (this branch, scripted, Android 16 emulator, Chrome 133, built Worker): 03 ✅ and 04 ✅ with their new Back steps, 05 ✅, 11 ✅.
 
 Push delivery (by hand, 2026-10-14 at f251789): ✅ delivered with the app closed, ✅ suppressed with it open, ✅ notification opens the conversation.
