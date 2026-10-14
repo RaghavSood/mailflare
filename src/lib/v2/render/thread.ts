@@ -6,7 +6,7 @@ import { icon } from "../icons";
 import type { V2Context, V2Folder, V2Thread, V2ThreadMessage, V2ViewKey } from "../types";
 import { avatarHue, bareAddress, displayName, formatCount, formatFullDate, formatRelative, formatSize, initials, recipientSummary } from "./format";
 import { buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./mail-frame";
-import { moveMenu, snoozeMenu } from "./menus";
+import { moveMenu, snoozeDefaultButton, snoozeMenu } from "./menus";
 
 export type ThreadPageInput = {
 	view: V2ViewKey;
@@ -153,17 +153,18 @@ export function renderThreadMain(ctx: V2Context, input: ThreadPageInput): Html {
 	<div class="page" data-page="thread" data-view="${input.view}" data-list="${input.listHref}" data-newer="${input.newerHref ?? ""}" data-older="${input.olderHref ?? ""}" data-latest="${latest.id}">
 		<div class="toolbar" role="toolbar" aria-label="Conversation actions">
 			<a class="icon-button" href="${input.listHref}" title="Back (u)" aria-label="Back to list">${icon("arrow-left")}</a>
+			${canMove ? snoozeDefaultButton("thread-form") : ""}
 			<div class="tb-group">
 				${inboxish
-					? html`<button class="icon-button" form="thread-form" name="action" value="inbox" title="${input.view === "spam" ? "Not spam" : "Move to Inbox"}" aria-label="Move to Inbox">${icon("inbox")}</button>`
-					: html`<button class="icon-button" form="thread-form" name="action" value="archive" title="Archive (e)" aria-label="Archive">${icon("archive")}</button>`}
-				${input.view !== "spam" ? html`<button class="icon-button" form="thread-form" name="action" value="spam" title="Report spam (!)" aria-label="Report spam">${icon("alert")}</button>` : ""}
-				${input.view !== "trash" ? html`<button class="icon-button" form="thread-form" name="action" value="trash" title="Delete (#)" aria-label="Delete">${icon("trash")}</button>` : ""}
+					? html`<button class="icon-button" type="submit" form="thread-form" name="action" value="inbox" title="${input.view === "spam" ? "Not spam" : "Move to Inbox"}" aria-label="Move to Inbox">${icon("inbox")}</button>`
+					: html`<button class="icon-button" type="submit" form="thread-form" name="action" value="archive" title="Archive (e)" aria-label="Archive">${icon("archive")}</button>`}
+				${input.view !== "spam" ? html`<button class="icon-button" type="submit" form="thread-form" name="action" value="spam" title="Report spam (!)" aria-label="Report spam">${icon("alert")}</button>` : ""}
+				${input.view !== "trash" ? html`<button class="icon-button" type="submit" form="thread-form" name="action" value="trash" title="Delete (#)" aria-label="Delete">${icon("trash")}</button>` : ""}
 				<span class="tb-sep"></span>
-				<button class="icon-button" form="thread-form" name="action" value="unread" title="Mark as unread (Shift+U)" aria-label="Mark as unread">${icon("mail")}</button>
+				<button class="icon-button" type="submit" form="thread-form" name="action" value="unread" title="Mark as unread (Shift+U)" aria-label="Mark as unread">${icon("mail")}</button>
 				${canMove ? snoozeMenu("thread-form") : ""}
 				${canMove ? moveMenu("thread-form", input.folders) : ""}
-				<button class="${cx("icon-button", "star-button", starred && "is-starred")}" form="thread-form" name="action" value="${starred ? "unstar" : "star"}" title="Star (s)" aria-pressed="${starred ? "true" : "false"}" aria-label="Star">${icon("star")}</button>
+				<button class="${cx("icon-button", "star-button", starred && "is-starred")}" type="submit" form="thread-form" name="action" value="${starred ? "unstar" : "star"}" title="Star (s)" aria-pressed="${starred ? "true" : "false"}" aria-label="Star">${icon("star")}</button>
 			</div>
 			<div class="tb-spacer"></div>
 			<div class="tb-pager">

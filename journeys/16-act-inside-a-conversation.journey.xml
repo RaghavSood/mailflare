@@ -1,0 +1,39 @@
+<journey name="Act on a conversation from its toolbar">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with three newly delivered conversations (none starred or snoozed) at the top of the list, and the service worker has stored the inbox page.
+		Inside a conversation on a phone, the toolbar and its Move and Snooze bottom sheets are the way to act on it. Each action must reach the server with the button that was tapped, online and when queued offline.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Verify that the conversation opens with its subject shown as a heading</action>
+		<action>Tap the "Move to" button (folder with an arrow) in the toolbar at the top of the conversation</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Inbox", "Archive", "Spam" and "Trash"</action>
+		<action>Tap "Archive" in that panel</action>
+		<action>Verify that the inbox list is shown with a message reading "Conversation archived." and an "Undo" button, that the archived conversation is no longer in the list, and that no message reads "That action isn't available here."</action>
+		<action>Tap the menu button at the top left of the screen and tap "Archive" in the drawer</action>
+		<action>Verify that the archived conversation is listed in Archive</action>
+		<action>Tap the menu button at the top left of the screen and tap "Inbox" in the drawer</action>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Tap the star button at the right end of the toolbar</action>
+		<action>Verify that the star in the toolbar is filled in, the same conversation is still shown, and no message reads "That action isn't available here."</action>
+		<action>Tap the "Snooze" button (clock) in the toolbar</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Later today", "Tomorrow", "This weekend" and "Next week"</action>
+		<action>Tap "Next week" in that panel</action>
+		<action>Verify that the inbox list is shown with a message starting "Snoozed until", and that the snoozed conversation is no longer in the list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Snoozed" in the drawer</action>
+		<action>Verify that the snoozed conversation is listed in Snoozed</action>
+		<action>Tap the menu button at the top left of the screen and tap "Starred" in the drawer</action>
+		<action>Verify that the snoozed conversation is listed in Starred too</action>
+		<action>Tap the menu button at the top left of the screen and tap "Inbox" in the drawer</action>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings</action>
+		<action>Tap the "Move to" button in the toolbar and tap "Archive" in the panel that slides up</action>
+		<action>Verify that the inbox list is shown, the banner at the top reads "Offline" followed by "1 change waiting", and the conversation is no longer in the list</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 15 seconds</action>
+		<action>Verify that the banner is gone and the conversation archived offline is still not in the inbox list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Archive" in the drawer</action>
+		<action>Verify that the conversation archived offline is listed in Archive</action>
+	</actions>
+</journey>

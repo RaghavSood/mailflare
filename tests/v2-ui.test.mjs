@@ -27,7 +27,8 @@ await build({
 			export { homePathFor } from "./src/lib/v2/preference.ts";
 			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
 			export { renderComposer } from "./src/lib/v2/render/compose.ts";
-			export { renderDetails } from "./src/lib/v2/render/thread.ts";
+			export { renderDetails, renderThreadMain } from "./src/lib/v2/render/thread.ts";
+			export { renderListMain } from "./src/lib/v2/render/list.ts";
 			export { resolvePushControlState, shownPushControlState, pushKeyFailureState, describePushError, PUSH_OFFLINE_MESSAGE } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
@@ -479,4 +480,48 @@ test("touch markup: the keyboard resizes the page, the rail names its items, rec
 	));
 	// The close button reuses the details toggle, so it needs no script of its own.
 	assert.match(details, /<button type="button" class="icon-button sheet-close" data-details="msg_1" aria-label="Close details">/);
+});
+
+test("toolbar buttons outside their form submit it with their own name and value", () => {
+	const url = new URL("https://mail.example.com/v2/inbox/msg_1");
+	const ctx = { user: { id: "usr_1", email: "me@example.com", name: "Me" }, url, mailboxes: [], scopeMailboxIds: ["mbx_1"] };
+	const folders = [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }];
+	const message = {
+		id: "msg_1", mailboxId: "mbx_1", direction: "inbound", status: "received", folderId: null, fromAddr: "a@example.com", fromName: "A", toAddr: "me@example.com",
+		ccAddr: null, bccAddr: null, deliveredTo: null, subject: "Hi", snippet: "Hi", textBody: "Hi", htmlBody: null, createdAt: new Date("2026-10-14T08:00:00Z"),
+		read: true, starred: false, providerMessageId: null, references: null, threadId: null, attachments: [],
+	};
+	const pages = [];
+	for (const view of ["inbox", "archive", "spam", "trash", "starred", "folder", "drafts"]) {
+		pages.push([`thread ${view}`, String(v2.renderThreadMain(ctx, {
+			view, folderId: view === "folder" ? "fld_1" : null, q: "", thread: { key: "msg_1", subject: "Hi", messages: [message], mailboxId: "mbx_1" },
+			listHref: `/v2/${view}`, index: 0, total: 1, newerHref: null, olderHref: null, folders, timeZone: "UTC", ownAddresses: new Set(["me@example.com"]), expandedIds: new Set(),
+		}))]);
+	}
+	for (const view of ["inbox", "archive", "spam", "trash", "sent", "drafts", "all"]) {
+		pages.push([`list ${view}`, String(v2.renderListMain(ctx, {
+			view, title: view, folderId: null, q: "", page: { rows: [], total: 0, page: 1, pageSize: 50 }, folders, timeZone: "UTC", emptyText: "Nothing here.",
+		}))]);
+	}
+	for (const [name, markup] of pages) {
+		const buttons = markup.match(/<button\b[^>]*\sform="[^"]*"[^>]*>/g) ?? [];
+		assert.ok(buttons.length > 0, name);
+		// htmx records the clicked button of a boosted form only for type="submit" buttons that name the form.
+		for (const button of buttons) assert.match(button, /\stype="submit"/, `${name}: ${button}`);
+		// Enter in the snooze date field clicks the form's first submit button: that must be the custom snooze.
+		for (const formId of new Set(buttons.map((button) => button.match(/\sform="([^"]*)"/)[1]))) {
+			const own = buttons.filter((button) => button.includes(`form="${formId}"`));
+			if (!markup.includes(`name="snoozeAt" form="${formId}"`)) {
+				assert.ok(!own.some((button) => button.includes(" hidden")), `${name}: no hidden default without a date field`);
+				continue;
+			}
+			assert.match(own[0], /name="snooze" value="custom" hidden/, `${name}: ${own[0]}`);
+		}
+	}
+	// The toolbar focus shortcut lands on the first link or button, so the hidden one never comes first.
+	for (const [name, markup] of pages) {
+		const toolbar = markup.slice(markup.indexOf('class="toolbar"'));
+		const first = toolbar.match(/<(a|button|summary)\b[^>]*>/)[0];
+		assert.ok(!first.includes(" hidden"), `${name}: ${first}`);
+	}
 });
