@@ -11,12 +11,12 @@ import { LIMITS, KEYWORD_FLAGGED, KEYWORD_SEEN } from "./constants";
 import { JmapError, invalidArguments } from "./errors";
 import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
 import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
-import { importFlags, parseReceivedAt, resolveDraftsMailbox } from "./email-import-utils";
+import { importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
 import { currentSeq, exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
 import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
 import { getEmailState, refreshEmailState } from "./state";
-import { listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
+import { findJmapMailbox, listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
 import { deleteUpload, readUpload, storeRawDraftMime } from "./blobs";
 import type { Comparator, EmailAddressObject, Filter, JmapContext, JmapMethodHandler, JmapSetError, MailboxRef } from "./types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
@@ -282,11 +282,12 @@ function keywordsFromPatch(patch: Record<string, unknown>): { read?: boolean; st
 async function createDraft(ctx: JmapContext, value: Record<string, unknown>, accessible: Set<string>) {
 	const target = resolveDraftsMailbox(value.mailboxIds, accessible);
 	if ("error" in target) return target;
+	const mailbox = await findJmapMailbox(ctx, target.mailboxId);
+	if (!mailbox) return { error: { type: "invalidProperties", properties: ["mailboxIds"], description: "Unknown mailbox" } };
 	const from = (value.from as EmailAddressObject[] | undefined)?.[0]?.email;
-	if (!from) return { error: { type: "invalidProperties", properties: ["from"] } };
 	let sender: { fromAddr: string; mailboxId: string };
 	try {
-		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from, mailboxId: target.mailboxId });
+		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: resolveDraftSender(from, mailbox), mailboxId: target.mailboxId });
 	} catch (error) {
 		return { error: { type: "forbidden", description: error instanceof Error ? error.message : "Cannot send from that address" } };
 	}
@@ -413,10 +414,15 @@ export const emailSet: JmapMethodHandler = async (ctx, args) => {
  * bytes are kept verbatim under `drafts/` and the parsed headers fill the
  * columns the rest of Mailflare reads, including `providerMessageId`, which is
  * what lets a client find its own draft again with a Message-ID header filter.
+ * A message without a From header is filed under the mailbox's own address
+ * rather than rejected: the sender is only settled at submission, so clients
+ * routinely leave it out.
  */
 async function importEmail(ctx: JmapContext, value: Record<string, unknown>, writable: Set<string>): Promise<{ id: string } | { error: JmapSetError }> {
 	const target = resolveDraftsMailbox(value.mailboxIds, writable);
 	if ("error" in target) return target;
+	const mailbox = await findJmapMailbox(ctx, target.mailboxId);
+	if (!mailbox) return { error: { type: "invalidProperties", properties: ["mailboxIds"], description: "Unknown mailbox" } };
 
 	const blob = typeof value.blobId === "string" ? decodeBlobId(value.blobId) : null;
 	if (!blob || blob.kind !== "up") return { error: { type: "blobNotFound", description: "blobId must name an upload from this account" } };
@@ -431,11 +437,10 @@ async function importEmail(ctx: JmapContext, value: Record<string, unknown>, wri
 	} catch (error) {
 		return { error: { type: "invalidEmail", description: error instanceof Error ? error.message : "The blob is not a MIME message" } };
 	}
-	if (!parsed.fromAddr) return { error: { type: "invalidEmail", description: "The message has no From header" } };
 
 	let sender: { fromAddr: string; mailboxId: string };
 	try {
-		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: parsed.fromAddr, mailboxId: target.mailboxId });
+		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: resolveDraftSender(parsed.fromAddr, mailbox), mailboxId: target.mailboxId });
 	} catch (error) {
 		return { error: { type: "forbidden", description: error instanceof Error ? error.message : "Cannot send from that address" } };
 	}

@@ -35,6 +35,18 @@ export function parseReceivedAt(value: unknown): Date | null {
 }
 
 /**
+ * The address a new draft is from when the client named none: the target
+ * mailbox's own address. Clients that compose MIME locally often leave From
+ * out, because the identity is only chosen at EmailSubmission/set, and
+ * RFC 8621 makes `from` optional on Email/set create too. The result still
+ * goes through `getAuthorizedSenderAddress` like any client-supplied sender.
+ */
+export function resolveDraftSender(from: string | null | undefined, mailbox: { localPart: string; hostname: string }): string {
+	const given = (from ?? "").trim();
+	return given || `${mailbox.localPart}@${mailbox.hostname}`;
+}
+
+/**
  * Where a new message may be created: exactly one JMAP Mailbox, and it must be
  * a Drafts role mailbox the key can write to. Importing into arbitrary mailboxes
  * would have to answer for threading, spam scoring and inbound state, so v1

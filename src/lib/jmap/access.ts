@@ -29,6 +29,11 @@ export function listJmapMailboxes(ctx: JmapContext): Promise<AccessibleMailbox[]
 	});
 }
 
+/** One accessible mailbox by Mailflare id, or null when the key cannot see it. */
+export async function findJmapMailbox(ctx: JmapContext, mailboxId: string): Promise<AccessibleMailbox | null> {
+	return (await listJmapMailboxes(ctx)).find((row) => row.id === mailboxId) ?? null;
+}
+
 export function listAccessibleMailboxIdSet(ctx: JmapContext): Promise<Set<string>> {
 	return memoize(ctx, "mailboxIds", async () => new Set((await listJmapMailboxes(ctx)).map((row) => row.id)));
 }
