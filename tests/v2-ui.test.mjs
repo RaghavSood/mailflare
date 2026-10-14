@@ -25,6 +25,7 @@ await build({
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
+			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
 		`,
 		resolveDir: root,
 		sourcefile: "v2-test-entry.js",
@@ -238,4 +239,46 @@ test("view membership matches the conversation_views triggers", () => {
 	assert.equal(v2.memberInView({ ...base, starred: true, status: "spam" }, "starred", null, now), false);
 	assert.equal(v2.memberInView({ ...base, status: "archived" }, "all", null, now), true);
 	assert.equal(v2.memberInView({ ...base, status: "draft" }, "all", null, now), false);
+});
+
+test("v2 pages link the web app manifest and hand app.js the versioned service worker", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const out = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+
+	assert.match(out, /<link rel="manifest" href="\/manifest\.webmanifest">/);
+	assert.match(out, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/);
+	assert.match(out, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+	assert.match(out, /<meta name="apple-mobile-web-app-status-bar-style" content="[a-z-]+">/);
+	assert.equal(v2.SERVICE_WORKER_URL, `/sw.js?v=${v2.ASSET_VERSION}&htmx=${v2.HTMX_VERSION}`);
+	assert.ok(out.includes(`data-sw="/sw.js?v=${v2.ASSET_VERSION}&amp;htmx=${v2.HTMX_VERSION}"`), "body carries the worker URL");
+	assert.ok(out.includes(`/v2-assets/app.js?v=${v2.ASSET_VERSION}`));
+	assert.ok(out.includes(`/v2-assets/htmx.min.js?v=${v2.HTMX_VERSION}`));
+
+	// app.js registers whatever the body names, scoped to the v2 interface.
+	const app = await readFile(join(root, "public/v2-assets/app.js"), "utf8");
+	assert.match(app, /navigator\.serviceWorker\.register\(url, \{ scope: "\/v2\/" \}\)/);
+	assert.match(app, /body\.dataset\.sw/);
+
+	// The manifest launches into v2 and ships the install icon sizes.
+	const manifest = JSON.parse(await readFile(join(root, "public/manifest.webmanifest"), "utf8"));
+	assert.equal(manifest.start_url, "/v2/inbox");
+	assert.equal(manifest.scope, "/v2/");
+	assert.equal(manifest.display, "standalone");
+	const sizes = manifest.icons.map((icon) => `${icon.sizes}:${icon.purpose}`);
+	assert.deepEqual(sizes.sort(), ["192x192:any", "512x512:any", "512x512:maskable"]);
+	for (const icon of manifest.icons) await readFile(join(root, "public", icon.src));
 });

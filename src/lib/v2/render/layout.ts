@@ -4,7 +4,11 @@ import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "1";
+export const ASSET_VERSION = "2";
+export const HTMX_VERSION = "2.0.11";
+
+/** The service worker's URL carries the asset versions it precaches (public/sw.js). */
+export const SERVICE_WORKER_URL = `/sw.js?v=${ASSET_VERSION}&htmx=${HTMX_VERSION}`;
 
 const HTMX_CONFIG = JSON.stringify({
 	includeIndicatorStyles: false,
@@ -122,11 +126,17 @@ export function renderPage(
 <meta name="htmx-config" content="${HTMX_CONFIG}">
 <title>${input.title}</title>
 <link rel="icon" href="/favicon.ico">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mailflare">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="${`/v2-assets/app.css?v=${ASSET_VERSION}`}">
-<script src="${`/v2-assets/htmx.min.js?v=2.0.11`}" defer></script>
+<script src="${`/v2-assets/htmx.min.js?v=${HTMX_VERSION}`}" defer></script>
 <script src="${`/v2-assets/app.js?v=${ASSET_VERSION}`}" defer></script>
 </head>
-<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}">
+<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}" data-sw="${SERVICE_WORKER_URL}">
 <a class="skip-link" href="#main">Skip to content</a>
 <div class="progress" aria-hidden="true"></div>
 <datalist id="v2-contacts"></datalist>

@@ -393,7 +393,9 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	if (method === "POST" && !isSameOrigin(request, url)) return htmlResponse("Forbidden", { status: 403 });
 	const identity = await loadIdentity(env, request);
 	if (!identity) {
-		if (method === "GET") return redirect(`/login`);
+		// Opening a v2 page (an installed app's start URL included) should come
+		// back to v2 after signing in, which the login redirect reads from mf_ui.
+		if (method === "GET") return redirect(`/login`, route.kind === "view" || route.kind === "home" ? [cookie(UI_PREFERENCE_COOKIE, "v2", url)] : []);
 		return htmlResponse("Your session has ended. Sign in again.", { status: 401 });
 	}
 	const { user } = identity;

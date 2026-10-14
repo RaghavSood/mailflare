@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)">
+<title>Offline · Mailflare</title>
+<style>
+	:root { color-scheme: light dark; --bg: #ffffff; --fg: #1f1f1f; --muted: #5f6368; --accent: #0b57d0; --accent-fg: #ffffff; }
+	@media (prefers-color-scheme: dark) { :root { --bg: #111214; --fg: #e3e3e3; --muted: #9aa0a6; --accent: #a8c7fa; --accent-fg: #062e6f; } }
+	* { box-sizing: border-box; }
+	html, body { height: 100%; }
+	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center; padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+	main { max-width: 360px; text-align: center; }
+	img { width: 72px; height: 72px; }
+	h1 { font-size: 20px; font-weight: 600; margin: 16px 0 8px; }
+	p { color: var(--muted); margin: 0 0 24px; }
+	a.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 24px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-weight: 600; text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+	<img src="/icon-192.png" alt="">
+	<h1>You're offline</h1>
+	<p>Mailflare can't reach the server right now. Check your connection and try again.</p>
+	<a class="button" href="">Try again</a>
+</main>
+</body>
+</html>

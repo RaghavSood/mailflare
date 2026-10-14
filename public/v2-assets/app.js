@@ -1054,4 +1054,17 @@
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "visible" && pageKind() === "list") refreshQuietly();
 	});
+
+	/* ---------- installable app ---------- */
+
+	// The server renders the worker URL with the asset versions it precaches.
+	function registerServiceWorker() {
+		const url = body.dataset.sw;
+		if (!url || !("serviceWorker" in navigator) || !window.isSecureContext) return;
+		navigator.serviceWorker.register(url, { scope: "/v2/" }).catch(() => {
+			/* Offline support is optional; the app works without it. */
+		});
+	}
+	if (document.readyState === "complete") registerServiceWorker();
+	else window.addEventListener("load", registerServiceWorker, { once: true });
 })();
