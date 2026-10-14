@@ -108,7 +108,10 @@
 		if (event.detail.requestConfig?.parameters?.partial === "1") refresh().then(() => toast(text));
 		else toast(text);
 	});
-	document.addEventListener("htmx:sendError", () => toast("You appear to be offline."));
+	document.addEventListener("htmx:sendError", (event) => {
+		if (handleOfflineFailure(event.detail)) return;
+		toast("You appear to be offline.");
+	});
 
 	/* ---------- page setup after every swap ---------- */
 
@@ -275,6 +278,8 @@
 			.then(() => {
 				// Refill a page that has emptied out.
 				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh();
+			}, () => {
+				/* Unreachable: htmx:sendError queued it or said so. */
 			});
 	}
 
@@ -337,7 +342,12 @@
 				button.classList.toggle("is-starred", !on);
 				toast("Couldn't update the star.");
 			}
-		});
+		}, () => queueOffline("act", [...data]).then((queued) => {
+			if (!queued) {
+				button.classList.toggle("is-starred", !on);
+				toast("Couldn't update the star.");
+			}
+		}));
 	}
 
 	function openMenu(name) {
@@ -495,6 +505,11 @@
 			$("[data-recipients]", existing)?.focus();
 			return;
 		}
+		// The docked composer comes from the server; offline, the full-page one is cached.
+		if (!navigator.onLine) {
+			location.href = new URL("/v2/compose", location.href).href;
+			return;
+		}
 		window.htmx.ajax("GET", "/v2/compose/new", { target: "#compose-dock", select: "#compose-dock", swap: "outerHTML", source: body }).then(() => {
 			$("#compose-dock [data-recipients]")?.focus();
 		});
@@ -520,18 +535,25 @@
 		const hasContent = ["to", "cc", "bcc", "subject"].some((name) => form.elements[name]?.value.trim()) || (editor?.innerText.trim() ?? "") !== "";
 		if (!hasContent && !form.elements.draftId.value) return;
 		setState(form, "Saving…");
-		try {
-			const response = await fetch("/v2/draft", { method: "POST", body: composerData(form, false), headers: { Accept: "application/json" } });
-			const result = await response.json();
-			if (response.ok && result.draftId) {
-				form.elements.draftId.value = result.draftId;
-				setState(form, "Draft saved");
-			} else {
-				setState(form, result.error ?? "Not saved");
+		const data = composerData(form, false);
+		// The device copy is written first and kept until the server has the draft.
+		await withOutboxLock(async () => {
+			const local = await keepDraftOnDevice(form, data);
+			try {
+				const response = await fetch("/v2/draft", { method: "POST", body: data, headers: { Accept: "application/json", "X-Mailflare-User": body.dataset.user ?? "" } });
+				const result = await response.json();
+				await forgetOnDevice(local);
+				if (response.ok && result.draftId) {
+					form.elements.draftId.value = result.draftId;
+					setState(form, "Saved");
+				} else {
+					setState(form, result.error ?? "Not saved");
+				}
+			} catch {
+				setState(form, local ? "Saved on this device" : "Offline – not saved");
+				if (local) requestOutboxSync();
 			}
-		} catch {
-			setState(form, "Offline – not saved");
-		}
+		});
 	}
 
 	function closeComposer(form, { save = true } = {}) {
@@ -603,6 +625,7 @@
 	function setupComposer(form) {
 		if (form.dataset.ready) return;
 		form.dataset.ready = "1";
+		restoreDraftFromDevice(form);
 		let timer = 0;
 		const schedule = () => {
 			clearTimeout(timer);
@@ -771,10 +794,12 @@
 	}
 
 	function refresh() {
+		if (!navigator.onLine) return Promise.resolve();
 		return load("GET", `${location.pathname}${location.search}`);
 	}
 
 	function undo() {
+		if (!navigator.onLine) return toast("Undo needs a connection.");
 		const button = $("#toast [data-undo]");
 		if (button) button.click();
 		else toast("Nothing to undo.");
@@ -1019,6 +1044,8 @@
 	/* ---------- live updates ---------- */
 
 	function refreshQuietly() {
+		// Replayed actions must reach the server before the list is reloaded.
+		if (deferRefreshUntilDrained()) return;
 		const kind = pageKind();
 		const busy = selectedIds().length || $("details.menu[open]") || isTyping(document.activeElement);
 		const path = `${location.pathname}${location.search}`;
@@ -1250,4 +1277,403 @@
 		const target = new URL(url, location.href);
 		if (target.origin === location.origin && target.pathname.startsWith("/v2/")) navigate(`${target.pathname}${target.search}`);
 	});
+
+	/* ---------- offline: banner, cached pages and the outbox ----------
+	   offline.js holds the rules and the IndexedDB outbox. This part wires them
+	   to the page: the topbar banner, full navigations to cached pages while
+	   offline, handing boosted pages to the service worker to keep, queuing
+	   actions, drafts and sends that could not reach the server, and replaying
+	   them in order once it can. Everything is keyed by <body data-user>. */
+
+	const Offline = window.MailflareOffline;
+	const currentUser = body.dataset.user ?? "";
+	let draining = null;
+	let refreshAfterDrain = false;
+	let pendingCount = 0;
+
+	function withOutboxLock(fn) {
+		return Offline ? Offline.withLock(fn) : fn();
+	}
+
+	function postToWorker(message) {
+		navigator.serviceWorker?.controller?.postMessage(message);
+	}
+
+	function requestOutboxSync() {
+		navigator.serviceWorker?.ready.then((registration) => registration.sync?.register(Offline.SYNC_TAG)).catch(() => {
+			/* No Background Sync: the page replays on "online" and on load. */
+		});
+	}
+
+	function formatCachedAt(ms) {
+		const date = new Date(ms);
+		const sameDay = date.toDateString() === new Date().toDateString();
+		return new Intl.DateTimeFormat(undefined, sameDay ? { hour: "numeric", minute: "2-digit" } : { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(date);
+	}
+
+	function updateConnectivity() {
+		const offline = !navigator.onLine;
+		const cachedAt = Number(body.dataset.cachedAt) || 0;
+		body.classList.toggle("is-offline", offline);
+		const banner = $("[data-offline-banner]");
+		const text = $("[data-offline-text]");
+		if (banner && text) {
+			const waiting = pendingCount ? ` · ${pendingCount} ${pendingCount === 1 ? "change" : "changes"} waiting` : "";
+			const copy = cachedAt ? ` · copy from ${formatCachedAt(cachedAt)}` : "";
+			banner.hidden = !offline && !cachedAt && !pendingCount;
+			text.textContent = offline ? `Offline${copy}${waiting}` : cachedAt ? `Couldn't reach Mailflare${copy}${waiting}` : `Syncing${waiting}`;
+		}
+		// Search runs on the server.
+		const search = $(".search input");
+		if (search) {
+			search.disabled = offline;
+			search.placeholder = offline ? "Search needs a connection" : "Search mail";
+		}
+	}
+
+	async function updatePending() {
+		if (!Offline || !currentUser) return;
+		try {
+			pendingCount = (await Offline.outbox.all()).filter((entry) => entry.user === currentUser).length;
+		} catch {
+			pendingCount = 0;
+		}
+		updateConnectivity();
+	}
+
+	async function signedOut() {
+		if (Offline) await Offline.purgeEverything().catch(() => {});
+		location.href = new URL("/login", location.href).href;
+	}
+
+	/** Store what a failed request would have done; true when it was queued. */
+	async function queueOffline(kind, fields, key) {
+		if (!Offline || !currentUser) return false;
+		const entry = {
+			id: Offline.newRequestId(),
+			user: currentUser,
+			kind,
+			key: key || undefined,
+			createdAt: Date.now(),
+			fields: Offline.prepareFields(kind, fields),
+		};
+		try {
+			await withOutboxLock(() => Offline.outbox.add(entry));
+		} catch {
+			return false;
+		}
+		requestOutboxSync();
+		await updatePending();
+		return true;
+	}
+
+	/** A toast for the next page, when going offline means a full navigation. */
+	function flashAfterNavigation(message) {
+		try {
+			sessionStorage.setItem("mf_flash", message);
+		} catch {
+			/* sessionStorage unavailable */
+		}
+	}
+	function showFlash() {
+		try {
+			const message = sessionStorage.getItem("mf_flash");
+			sessionStorage.removeItem("mf_flash");
+			if (message) toast(message);
+		} catch {
+			/* sessionStorage unavailable */
+		}
+	}
+
+	function fieldsOf(formData) {
+		return formData ? [...formData] : [];
+	}
+
+	/**
+	 * htmx could not reach the server. A forward action, draft or send goes to
+	 * the outbox (the rows already changed); a boosted page becomes a full
+	 * navigation the service worker can answer from its cache.
+	 */
+	function handleOfflineFailure(detail) {
+		const config = detail.requestConfig;
+		if (!config) return false;
+		const url = new URL(config.path, location.href);
+		if (config.verb === "get" && config.boosted && url.origin === location.origin) {
+			location.href = url.href;
+			return true;
+		}
+		if (!Offline || config.verb !== "post") return false;
+		const fields = fieldsOf(config.formData);
+		const kind = Offline.queueKind(url.pathname, fields);
+		if (!kind || kind === "draft") return false;
+		const value = (name) => Offline.fieldValue(fields, name);
+		if (kind === "send") {
+			const form = config.elt?.closest?.("[data-composer]");
+			if (form) {
+				form.dataset.closed = "1";
+				setState(form, "Queued");
+			}
+			queueOffline("send", fields, form?.dataset.clientKey).then((queued) => {
+				if (!queued) {
+					if (form) {
+						delete form.dataset.closed;
+						setState(form, "Not sent");
+					}
+					return toast("You appear to be offline.");
+				}
+				const note = "You're offline. The message will be sent when you're back online.";
+				if (!form || form.dataset.mode !== "page") {
+					form?.remove();
+					toast(note);
+				} else {
+					flashAfterNavigation(note);
+					location.href = value("return") || "/v2/inbox";
+				}
+			});
+			return true;
+		}
+		queueOffline("act", fields).then((queued) => {
+			if (!queued) return toast("You appear to be offline.");
+			if (value("conversation") === "1") {
+				const action = value("action");
+				if (action === "star" || action === "unstar") {
+					const star = $("#main .star-button");
+					star?.classList.toggle("is-starred", action === "star");
+					if (star) star.value = action === "star" ? "unstar" : "star";
+				} else {
+					// The conversation leaves the view, as it would online.
+					flashAfterNavigation("You're offline. This will sync when you're back online.");
+					location.href = value("return") || "/v2/inbox";
+					return;
+				}
+			}
+			toast("You're offline. This will sync when you're back online.");
+		});
+		return true;
+	}
+
+	/* Drafts: the device copy is an outbox entry, one per composer. */
+
+	async function keepDraftOnDevice(form, data) {
+		if (!Offline || !currentUser) return null;
+		const entry = {
+			id: Offline.newRequestId(),
+			user: currentUser,
+			kind: "draft",
+			key: form.dataset.clientKey,
+			createdAt: Date.now(),
+			fields: Offline.prepareFields("draft", fieldsOf(data)),
+		};
+		try {
+			await Offline.outbox.add(entry);
+			return entry.id;
+		} catch {
+			return null;
+		}
+	}
+
+	async function forgetOnDevice(id) {
+		if (!id) return;
+		await Offline.outbox.delete(id).catch(() => {});
+		await updatePending();
+	}
+
+	/** A composer reopened on this device gets back what was typed but never reached the server. */
+	async function restoreDraftFromDevice(form) {
+		form.dataset.clientKey = form.elements.draftId?.value || Offline?.newRequestId() || String(Date.now());
+		if (!Offline || !currentUser || !form.elements.draftId?.value) return;
+		let entry;
+		try {
+			entry = (await Offline.outbox.all()).filter((item) => item.user === currentUser && item.kind === "draft" && item.key === form.dataset.clientKey).at(-1);
+		} catch {
+			return;
+		}
+		if (!entry) return;
+		for (const name of ["to", "cc", "bcc", "subject"]) {
+			const input = form.elements[name];
+			const saved = Offline.fieldValue(entry.fields, name);
+			if (input && saved !== input.value) {
+				input.value = saved;
+				input.closest("[data-cmp-row]")?.removeAttribute("hidden");
+			}
+		}
+		const editor = $("[data-editor]", form);
+		const html = Offline.fieldValue(entry.fields, "html");
+		if (editor && html) editor.innerHTML = html;
+		setState(form, "Saved on this device");
+	}
+
+	function applyDraftId(key, draftId) {
+		const form = $$("[data-composer]").find((item) => item.dataset.clientKey === key);
+		if (form && !form.elements.draftId.value) form.elements.draftId.value = draftId;
+	}
+
+	/* Replay */
+
+	function deferRefreshUntilDrained() {
+		if (!draining) return false;
+		refreshAfterDrain = true;
+		return true;
+	}
+
+	/** Replay the outbox, then reload what is on screen so it shows the result. */
+	function drainOutbox() {
+		if (!Offline || !currentUser || !navigator.onLine) return Promise.resolve(null);
+		if (draining) return draining;
+		const refused = [];
+		draining = (async () => {
+			try {
+				return await Offline.withLock(() => Offline.drain(Offline.outbox, {
+					fetch: (path, init) => fetch(path, init),
+					user: currentUser,
+					onDropped: (message) => refused.push(message),
+					onDraftId: applyDraftId,
+				}));
+			} catch {
+				return null;
+			}
+		})();
+		return draining.then(async (result) => {
+			draining = null;
+			await updatePending();
+			if (result?.signedOut) {
+				await signedOut();
+				return result;
+			}
+			if (refused.length) {
+				// As for an action refused online: show the truth, then say why.
+				await refresh();
+				toast(refused[refused.length - 1]);
+			} else if (result?.sent || refreshAfterDrain) {
+				refreshQuietly();
+			}
+			refreshAfterDrain = false;
+			return result;
+		});
+	}
+
+	/** Rows still waiting on queued actions look the way those actions will leave them. */
+	async function applyPendingToList() {
+		if (!Offline || !currentUser || pageKind() !== "list") return;
+		let entries;
+		try {
+			entries = (await Offline.outbox.all()).filter((entry) => entry.user === currentUser && entry.kind === "act");
+		} catch {
+			return;
+		}
+		const view = page()?.dataset.view ?? "";
+		for (const entry of entries) {
+			const values = { action: Offline.fieldValue(entry.fields, "action"), move: Offline.fieldValue(entry.fields, "move"), snooze: Offline.fieldValue(entry.fields, "snooze") };
+			const ids = entry.fields.filter(([name]) => name === "ids").map(([, id]) => id);
+			for (const row of rows().filter((item) => ids.includes(item.dataset.id))) {
+				if (leavesList(values, view)) row.remove();
+				else if (values.action === "read" || values.action === "unread") row.classList.toggle("is-unread", values.action === "unread");
+				else if (values.action === "star" || values.action === "unstar") {
+					const star = row.querySelector("[data-star]");
+					star?.classList.toggle("is-starred", values.action === "star");
+					star?.setAttribute("aria-pressed", String(values.action === "star"));
+				}
+			}
+		}
+	}
+
+	/* Wiring */
+
+	// Offline, boosted links become full navigations the worker answers from its cache.
+	document.addEventListener("htmx:beforeRequest", (event) => {
+		const config = event.detail.requestConfig;
+		if (navigator.onLine || config?.verb !== "get" || !config.boosted) return;
+		event.preventDefault();
+		location.href = new URL(config.path, location.href).href;
+	});
+
+	// Boosted pages never pass through the worker's cache; hand it the documents.
+	document.addEventListener("htmx:afterRequest", (event) => {
+		const { xhr, requestConfig: config, successful } = event.detail;
+		if (!xhr || !config || config.verb !== "get") return;
+		let url;
+		try {
+			url = new URL(xhr.responseURL, location.href);
+		} catch {
+			return;
+		}
+		if (url.origin !== location.origin) return;
+		if (url.pathname === "/login") {
+			signedOut();
+			return;
+		}
+		if (!successful || xhr.status !== 200 || url.pathname !== new URL(config.path, location.href).pathname) return;
+		if (Offline?.cacheKind(url) === "page") postToWorker({ type: "store-page", url: url.href, html: xhr.responseText });
+		if (event.detail.target?.id === "main" && body.dataset.cachedAt) {
+			delete body.dataset.cachedAt;
+			updateConnectivity();
+		}
+	});
+
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id === "main") applyPendingToList();
+	});
+
+	// Online, the worker keeps a copy of an attachment as it is downloaded (the
+	// download itself never passes through it); offline, that copy is saved instead.
+	document.addEventListener("click", (event) => {
+		const link = event.target instanceof Element ? event.target.closest("a.attachment") : null;
+		if (!link) return;
+		if (navigator.onLine) {
+			postToWorker({ type: "keep-file", url: link.href });
+			return;
+		}
+		event.preventDefault();
+		fetch(link.href)
+			.then((response) => (response.ok ? response.blob() : Promise.reject(new Error("not cached"))))
+			.then((blob) => {
+				const href = URL.createObjectURL(blob);
+				const save = document.createElement("a");
+				save.href = href;
+				save.download = link.getAttribute("download") || "";
+				save.click();
+				setTimeout(() => URL.revokeObjectURL(href), 30000);
+			})
+			.catch(() => toast("This attachment isn't available offline."));
+	});
+
+	navigator.serviceWorker?.addEventListener("message", (event) => {
+		const data = event.data;
+		if (data?.type === "outbox-draft") applyDraftId(data.key, data.draftId);
+		else if (data?.type === "outbox-dropped") refresh().then(() => toast(data.message));
+		else if (data?.type === "outbox-drained") {
+			updatePending();
+			if (data.result?.signedOut) signedOut();
+			else if (data.result?.sent) refreshQuietly();
+		}
+	});
+
+	window.addEventListener("online", () => {
+		updateConnectivity();
+		drainOutbox().then((result) => {
+			if (result && !result.sent && !refreshAfterDrain) refreshQuietly();
+		});
+	});
+	window.addEventListener("offline", updateConnectivity);
+
+	updateConnectivity();
+	showFlash();
+	if (Offline && currentUser) {
+		// Another account's caches and queued actions go before anything else runs.
+		Offline.adoptUser(currentUser).catch(() => {}).then(async () => {
+			await updatePending();
+			await applyPendingToList();
+			if (!navigator.onLine) return;
+			await drainOutbox();
+			// Keep the full-page composer so mail can be written offline.
+			try {
+				if (!sessionStorage.getItem("mf_compose_warm")) {
+					sessionStorage.setItem("mf_compose_warm", "1");
+					navigator.serviceWorker?.ready.then((registration) => registration.active?.postMessage({ type: "warm", url: "/v2/compose" }));
+				}
+			} catch {
+				/* sessionStorage unavailable */
+			}
+		});
+	}
 })();

@@ -13,7 +13,7 @@ import { getAuthorizedSenderAddress, getReplyFromAddress } from "@/lib/email/sen
 import { formatEmailAddress, getEmailAddressList } from "@/lib/email/address";
 import { newId } from "@/lib/ids";
 import type { V2Mailbox } from "../types";
-import { buildQuoteHtml, buildReplyRecipients, htmlToMailText, normalizeRecipients, replySubject, type ReplyMode } from "./compose-utils";
+import { buildQuoteHtml, buildReplyRecipients, draftForSend, htmlToMailText, normalizeRecipients, replySubject, type ReplyMode } from "./compose-utils";
 import { loadThread } from "./thread";
 
 export type ComposeDraft = {
@@ -219,13 +219,11 @@ export async function sendCompose(
 	let quote: string | null = null;
 	let stored: AttachmentContent[] = [];
 	let threading = { inReplyTo: input.inReplyTo, references: input.references, threadId: input.threadId };
-	if (input.draftId) {
-		const draft = await selectDraftWithBody(db, user.id, input.draftId);
-		if (draft) {
-			quote = splitQuotedHtml(draft.htmlBody).quoted;
-			stored = await loadMessageAttachmentContents(env, draft.id);
-			threading = { inReplyTo: draft.inReplyTo, references: draft.references, threadId: draft.threadId };
-		}
+	const draft = draftForSend(input.draftId, input.draftId ? await selectDraftWithBody(db, user.id, input.draftId) : null);
+	if (draft) {
+		quote = splitQuotedHtml(draft.htmlBody).quoted;
+		stored = await loadMessageAttachmentContents(env, draft.id);
+		threading = { inReplyTo: draft.inReplyTo, references: draft.references, threadId: draft.threadId };
 	}
 	const html = quote ? `${input.bodyHtml}${wrapQuotedHtml(quote)}` : input.bodyHtml;
 	const result = await sendEmail(env, {

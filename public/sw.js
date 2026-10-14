@@ -2,9 +2,8 @@
    The registration URL carries the asset versions (?v=<ASSET_VERSION>&htmx=<version>),
    so bumping ASSET_VERSION installs a new worker that precaches the new assets
    and drops the old ones. Pages are network-first; a navigation that cannot
-   reach the server gets the offline page. Only static assets are cached here:
-   v2 pages hold mail, so caching them needs the per-user keying that comes with
-   offline reading.
+   reach the server gets the user's cached copy (see "offline reading") or the
+   offline page.
    It also shows new-mail push notifications (the server decides whether to
    send one, so every push shows a notification, as Chrome requires) and
    keeps the push subscription registered with the server. */
@@ -15,10 +14,12 @@ const ASSET_VERSION = params.get("v") || "0";
 const HTMX_VERSION = params.get("htmx") || "0";
 const STATIC_CACHE = `mf-static-${ASSET_VERSION}-${HTMX_VERSION}`;
 const OFFLINE_URL = "/v2-assets/offline.html";
+importScripts(`/v2-assets/offline.js?v=${ASSET_VERSION}`);
 const PRECACHE = [
 	`/v2-assets/app.css?v=${ASSET_VERSION}`,
 	`/v2-assets/app.js?v=${ASSET_VERSION}`,
 	`/v2-assets/htmx.min.js?v=${HTMX_VERSION}`,
+	`/v2-assets/offline.js?v=${ASSET_VERSION}`,
 	OFFLINE_URL,
 	"/icon-192.png",
 	"/favicon.ico",
@@ -58,16 +59,11 @@ self.addEventListener("fetch", (event) => {
 	if (url.origin !== self.location.origin) return;
 
 	if (isPageNavigation(request, url)) {
-		event.respondWith((async () => {
-			try {
-				return await fetch(request);
-			} catch {
-				const offline = await caches.match(OFFLINE_URL, { cacheName: STATIC_CACHE });
-				return offline || new Response("You're offline.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
-			}
-		})());
+		event.respondWith(pageFromNetworkOrCache(event, request, url));
 		return;
 	}
+
+	if (request.method === "GET" && handleMailFetch(event, request, url)) return;
 
 	if (request.method === "GET" && isPrecached(url)) {
 		// Versioned URLs never change, so the precache is authoritative; anything
@@ -149,5 +145,194 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 		const applicationServerKey = key ? btoa(String.fromCharCode(...new Uint8Array(key))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : undefined;
 		await postSubscription("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey });
 		if (previous && previous.endpoint !== subscription.endpoint) await postSubscription("/v2/push/unsubscribe", { endpoint: previous.endpoint }).catch(() => {});
+	})());
+});
+
+/* ---------- offline reading ----------
+   Pages, mail bodies and attachments the user has seen are kept in one cache
+   per user (mf-user-<id>), at most one of which exists: storing anything for a
+   user drops every other user's cache. A page is stored only if it is a full
+   200 document, not redirected, whose <body data-user> names its owner, which
+   only a signed-in render carries. Pages are network-first; the cached copy is
+   served only when the network fails, marked with data-cached-at. Boosted
+   (htmx) navigations never reach this handler; app.js hands their documents
+   over with a "store-page" message instead, and goes to a full navigation
+   while offline. */
+
+const Offline = self.MailflareOffline;
+
+async function serveOffline(url) {
+	const cacheName = await currentUserCache();
+	const hit = cacheName ? await caches.match(url.href, { cacheName, ignoreVary: true }) : null;
+	if (hit) {
+		const cachedAt = Number(hit.headers.get("X-Mailflare-Cached-At")) || 0;
+		const headers = new Headers(hit.headers);
+		headers.delete("Content-Length");
+		return new Response(Offline.markCached(await hit.text(), cachedAt), { status: 200, headers });
+	}
+	const offline = await caches.match(OFFLINE_URL, { cacheName: STATIC_CACHE });
+	// Cloudflare's asset server redirects *.html to the extensionless URL, so the
+	// precached copy is a redirected response, which a navigation refuses
+	// (net::ERR_FAILED). A fresh Response carrying the same page is not.
+	if (offline) return new Response(await offline.blob(), { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+	return new Response("You're offline.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+}
+
+async function pageFromNetworkOrCache(event, request, url) {
+	let response;
+	try {
+		response = await fetch(request);
+	} catch {
+		return serveOffline(url);
+	}
+	if (Offline.cacheKind(url) === "page" && response.status === 200 && !response.redirected && response.type === "basic") {
+		const copy = response.clone();
+		event.waitUntil(copy.text().then((text) => storeDocument(url.href, text, copy.headers)).catch(() => {}));
+	}
+	return response;
+}
+
+/** The single user cache, if exactly one exists. */
+async function currentUserCache() {
+	const names = (await caches.keys()).filter(Offline.isUserCacheName);
+	return names.length === 1 ? names[0] : null;
+}
+
+/** Make `user` the only user with a cache, and return that cache. */
+async function cacheForUser(user) {
+	const own = Offline.userCacheName(user);
+	const names = await caches.keys();
+	await Promise.all(names.filter((name) => Offline.isUserCacheName(name) && name !== own).map((name) => caches.delete(name)));
+	return caches.open(own);
+}
+
+async function putTrimmed(cache, key, response, kind) {
+	await cache.delete(key, { ignoreVary: true });
+	await cache.put(key, response);
+	const urls = (await cache.keys()).map((item) => item.url);
+	await Promise.all(Offline.overLimit(urls, kind).map((old) => cache.delete(old, { ignoreVary: true })));
+}
+
+function storedHeaders(source) {
+	const headers = new Headers();
+	headers.set("Content-Type", source?.get?.("Content-Type") || "text/html; charset=utf-8");
+	headers.set("X-Mailflare-Cached-At", String(Date.now()));
+	return headers;
+}
+
+/** Store a rendered v2 page for the user it names; anything without an owner is not stored. */
+async function storeDocument(href, text, headers) {
+	const url = new URL(href);
+	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "page") return false;
+	const user = Offline.userFromHtml(text);
+	if (!user || !/^\s*<!doctype html/i.test(text)) return false;
+	const cache = await cacheForUser(user);
+	await putTrimmed(cache, url.href, new Response(text, { status: 200, headers: storedHeaders(headers) }), "page");
+	return true;
+}
+
+/**
+ * Mail bodies (/v2/body/<id>, fetched by htmx when a collapsed message opens)
+ * and attachments are cached as they are fetched, network-first. A body names
+ * its owner in X-Mailflare-User; an attachment only joins an existing user
+ * cache. Returns false when the request is not one of these.
+ */
+function handleMailFetch(event, request, url) {
+	const kind = Offline.cacheKind(url);
+	if (kind !== "body" && kind !== "file") return false;
+	event.respondWith((async () => {
+		let response;
+		try {
+			response = await fetch(request);
+		} catch (error) {
+			const cacheName = await currentUserCache();
+			const hit = cacheName ? await caches.match(request, { cacheName, ignoreVary: true, ignoreSearch: kind === "file" }) : null;
+			if (hit) return hit;
+			throw error;
+		}
+		if (response.status === 200 && !response.redirected && response.type === "basic") {
+			event.waitUntil(storeMail(url, kind, response.clone()).catch(() => {}));
+		}
+		return response;
+	})());
+	return true;
+}
+
+async function storeMail(url, kind, response) {
+	let cache;
+	if (kind === "body") {
+		const user = response.headers.get("X-Mailflare-User");
+		if (!user) return;
+		cache = await cacheForUser(user);
+	} else {
+		if (Number(response.headers.get("Content-Length")) > Offline.MAX_FILE_BYTES) return;
+		const name = await currentUserCache();
+		if (!name) return;
+		cache = await caches.open(name);
+	}
+	const headers = new Headers(response.headers);
+	headers.delete("Vary");
+	headers.set("X-Mailflare-Cached-At", String(Date.now()));
+	const body = await response.arrayBuffer();
+	if (body.byteLength > Offline.MAX_FILE_BYTES) return;
+	await putTrimmed(cache, url.href, new Response(body, { status: 200, headers }), kind);
+}
+
+/** Fetch a page the user has not opened yet (the full-page composer) and keep it. */
+async function warmPage(href) {
+	const url = new URL(href, self.location.origin);
+	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "page") return;
+	const response = await fetch(url.href, { credentials: "same-origin", headers: { Accept: "text/html" } });
+	if (response.status !== 200 || response.redirected) return;
+	await storeDocument(url.href, await response.text(), response.headers);
+}
+
+/**
+ * A download link is a navigation the worker never sees, so the page names the
+ * attachment it just downloaded and the worker fetches its own copy, within the
+ * size cap.
+ */
+async function keepFile(href) {
+	const url = new URL(href, self.location.origin);
+	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "file" || !(await currentUserCache())) return;
+	const response = await fetch(url.href, { credentials: "same-origin" });
+	if (response.status !== 200 || response.redirected) return;
+	await storeMail(url, "file", response);
+}
+
+/** Messages from app.js: documents of boosted navigations, and pages and files to keep ahead of time. */
+self.addEventListener("message", (event) => {
+	const data = event.data;
+	if (!data || typeof data !== "object" || typeof data.url !== "string") return;
+	if (data.type === "store-page" && typeof data.html === "string") event.waitUntil(storeDocument(data.url, data.html, null).catch(() => false));
+	else if (data.type === "warm") event.waitUntil(warmPage(data.url).catch(() => {}));
+	else if (data.type === "keep-file") event.waitUntil(keepFile(data.url).catch(() => {}));
+});
+
+/* ---------- queued actions ----------
+   Background Sync replays the outbox when the browser regains a connection,
+   even with no v2 page open. It replays only for the user app.js last
+   recorded; the server also refuses entries for anyone else (409). */
+
+async function notifyClients(message) {
+	const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: false });
+	for (const client of clients) client.postMessage(message);
+}
+
+self.addEventListener("sync", (event) => {
+	if (event.tag !== Offline.SYNC_TAG) return;
+	event.waitUntil((async () => {
+		const user = await Offline.meta.get("user").catch(() => null);
+		if (!user) return;
+		const result = await Offline.withLock(() => Offline.drain(Offline.outbox, {
+			fetch: (path, init) => fetch(path, init),
+			user,
+			onDropped: (message) => notifyClients({ type: "outbox-dropped", message }),
+			onDraftId: (key, draftId) => notifyClients({ type: "outbox-draft", key, draftId }),
+		}));
+		if (result.signedOut) await Offline.purgeEverything();
+		await notifyClients({ type: "outbox-drained", result });
+		// Leaving entries behind asks the browser to try again later.
+		if (result.remaining > 0 && !result.signedOut) throw new Error("Outbox not drained");
 	})());
 });

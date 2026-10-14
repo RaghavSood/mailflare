@@ -26,7 +26,7 @@ import {
 	sendCompose,
 	type ComposeInput,
 } from "./data/compose";
-import { parseFromValue } from "./data/compose-utils";
+import { DraftGoneError, parseFromValue } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
@@ -210,15 +210,17 @@ async function handleAct(ctx: V2Context, form: FormData): Promise<Response> {
 	const quiet = form.get("quiet") === "1";
 	const partial = form.get("partial") === "1" && !conversation;
 	const respond = async (path: string, options: { toast?: Html | null; push?: boolean; failed?: boolean } = {}): Promise<Response> => {
-		if (quiet) return new Response(null, { status: options.failed ? 422 : 204, headers: securityHeaders(new Headers()) });
+		// The page shows this as a toast through textContent.
+		const failure = () => new Response(
+			options.toast
+				? String(options.toast).replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim()
+				: "Something went wrong.",
+			{ status: 422, headers: securityHeaders(new Headers({ "Content-Type": "text/plain; charset=utf-8" })) },
+		);
+		// A replayed offline action is quiet too, and reports why it was refused.
+		if (quiet) return options.failed ? failure() : new Response(null, { status: 204, headers: securityHeaders(new Headers()) });
 		if (partial) {
-			if (options.failed) {
-				// The page shows this as a toast through textContent.
-				const text = options.toast
-					? String(options.toast).replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim()
-					: "Something went wrong.";
-				return new Response(text, { status: 422, headers: securityHeaders(new Headers({ "Content-Type": "text/plain; charset=utf-8" })) });
-			}
+			if (options.failed) return failure();
 			const nav = await navStateFor(ctx, { view, folderId });
 			return htmlResponse(html`${renderNav(ctx, nav)}${renderToast(options.toast ?? null)}`, { headers: { "HX-Push-Url": "false" } });
 		}
@@ -340,6 +342,8 @@ async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
 	try {
 		await sendCompose(ctx.env, ctx.user, { ...input, uploads });
 	} catch (error) {
+		// Already sent (a replay whose first response was lost) or discarded: never send it again.
+		if (error instanceof DraftGoneError) return htmlResponse(error.message, { status: 410 });
 		return htmlResponse(error instanceof Error ? error.message : "Sending failed.", { status: 422 });
 	}
 	const returnTo = safeReturnPath(String(form.get("return") ?? ""));
@@ -456,6 +460,9 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		return htmlResponse("Your session has ended. Sign in again.", { status: 401 });
 	}
 	const { user } = identity;
+	// Actions queued offline name the user who queued them; never apply them as anyone else.
+	const queuedBy = request.headers.get("x-mailflare-user");
+	if (method === "POST" && queuedBy && queuedBy !== user.id) return htmlResponse("This change was made while signed in as someone else.", { status: 409 });
 	const ctx = buildContext(env, request, user, identity.mailboxes, url);
 
 	if (route.kind === "home") return redirect("/v2/inbox");
@@ -501,7 +508,8 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		if (name === "body" && id) {
 			const message = await findMessage(ctx, id);
 			if (!message) return htmlResponse("Not found", { status: 404 });
-			return htmlResponse(renderMessageBody(message));
+			// The service worker keeps opened bodies for offline reading under this user.
+			return htmlResponse(renderMessageBody(message), { headers: { "X-Mailflare-User": user.id } });
 		}
 		if (name === "contacts") return handleContacts(ctx);
 		// For pages without data-vapid-key (classic settings, the service worker re-subscribing).

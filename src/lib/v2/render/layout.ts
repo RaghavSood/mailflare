@@ -4,7 +4,7 @@ import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "3";
+export const ASSET_VERSION = "4";
 export const HTMX_VERSION = "2.0.11";
 
 /** The service worker's URL carries the asset versions it precaches (public/sw.js). */
@@ -103,6 +103,7 @@ export function renderTopbar(ctx: V2Context, q: string): Html {
 			<input type="search" name="q" value="${q}" placeholder="Search mail" aria-label="Search mail" autocomplete="off" spellcheck="false" enterkeyhint="search">
 			<kbd class="search-hint">/</kbd>
 		</form>
+		<div class="offline-banner" data-offline-banner role="status" aria-live="polite" hidden>${icon("cloud-off")}<span data-offline-text>Offline</span></div>
 		<div class="topbar-actions">
 			<form method="post" action="/v2/prefs" hx-boost="false" class="inline-form">
 				<input type="hidden" name="theme" value="${nextTheme}">
@@ -143,9 +144,10 @@ export function renderPage(
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="${`/v2-assets/app.css?v=${ASSET_VERSION}`}">
 <script src="${`/v2-assets/htmx.min.js?v=${HTMX_VERSION}`}" defer></script>
+<script src="${`/v2-assets/offline.js?v=${ASSET_VERSION}`}" defer></script>
 <script src="${`/v2-assets/app.js?v=${ASSET_VERSION}`}" defer></script>
 </head>
-<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}" data-sw="${SERVICE_WORKER_URL}"${ctx.vapidPublicKey ? html` data-vapid-key="${ctx.vapidPublicKey}"` : ""}>
+<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}" data-sw="${SERVICE_WORKER_URL}" data-user="${ctx.user.id}"${ctx.vapidPublicKey ? html` data-vapid-key="${ctx.vapidPublicKey}"` : ""}>
 <a class="skip-link" href="#main">Skip to content</a>
 <div class="progress" aria-hidden="true"></div>
 <datalist id="v2-contacts"></datalist>

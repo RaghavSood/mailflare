@@ -21,7 +21,7 @@ await build({
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
 			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
-			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue } from "./src/lib/v2/data/compose-utils.ts";
+			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
@@ -268,6 +268,10 @@ test("v2 pages link the web app manifest and hand app.js the versioned service w
 	assert.ok(out.includes(`data-sw="/sw.js?v=${v2.ASSET_VERSION}&amp;htmx=${v2.HTMX_VERSION}"`), "body carries the worker URL");
 	assert.ok(out.includes(`/v2-assets/app.js?v=${v2.ASSET_VERSION}`));
 	assert.ok(out.includes(`/v2-assets/htmx.min.js?v=${v2.HTMX_VERSION}`));
+	// Offline support: the user its caches and outbox are keyed by, the shared module before app.js, and the banner.
+	assert.match(out, /<body [^>]*data-user="usr_1"/);
+	assert.ok(out.indexOf(`/v2-assets/offline.js?v=${v2.ASSET_VERSION}`) > 0 && out.indexOf(`/v2-assets/offline.js?v=${v2.ASSET_VERSION}`) < out.indexOf("/v2-assets/app.js"));
+	assert.match(out, /<div class="offline-banner" data-offline-banner role="status" aria-live="polite" hidden>/);
 
 	// app.js registers whatever the body names, scoped to the v2 interface.
 	const app = await readFile(join(root, "public/v2-assets/app.js"), "utf8");
@@ -333,8 +337,9 @@ test("the opt-in state: install first on iOS outside the app, blocked, off, on, 
 /** Runs public/sw.js against a fake ServiceWorkerGlobalScope and returns its listeners and spies. */
 async function loadServiceWorker({ windows = [] } = {}) {
 	const { readFile } = await import("node:fs/promises");
-	const { runInNewContext } = await import("node:vm");
+	const { createContext, runInContext } = await import("node:vm");
 	const source = await readFile(join(root, "public/sw.js"), "utf8");
+	const offline = await readFile(join(root, "public/v2-assets/offline.js"), "utf8");
 	const listeners = {};
 	const shown = [];
 	const opened = [];
@@ -348,7 +353,10 @@ async function loadServiceWorker({ windows = [] } = {}) {
 			claim: async () => {},
 		},
 	};
-	runInNewContext(source, { self, URL, Uint8Array, atob, JSON, console, caches: {}, fetch: async () => { throw new Error("offline"); } });
+	const context = createContext({ self, URL, Uint8Array, atob, JSON, console, caches: {}, fetch: async () => { throw new Error("offline"); } });
+	// The worker loads the shared offline module first.
+	context.importScripts = () => runInContext(offline, context);
+	runInContext(source, context);
 	async function dispatch(type, event) {
 		let pending;
 		listeners[type]({ ...event, waitUntil: (promise) => { pending = promise; } });
@@ -392,4 +400,12 @@ test("notification click focuses an open v2 window and opens the message there, 
 	await none.dispatch("notificationclick", { notification });
 	assert.deepEqual([...none.opened], ["https://mail.example.com/v2/inbox/msg_42"]);
 	assert.equal(closed, 2);
+});
+
+test("a send that names a vanished draft is refused instead of sent again", () => {
+	assert.equal(v2.draftForSend(null, null), null, "a fresh message has no draft");
+	const draft = { id: "msg_1" };
+	assert.equal(v2.draftForSend("msg_1", draft), draft);
+	assert.throws(() => v2.draftForSend("msg_1", null), v2.DraftGoneError);
+	assert.throws(() => v2.draftForSend("msg_1", undefined), /already sent or its draft was discarded/);
 });

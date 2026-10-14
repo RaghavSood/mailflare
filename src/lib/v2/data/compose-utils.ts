@@ -105,3 +105,23 @@ export function parseFromValue(value: string | null | undefined): { mailboxId: s
 export function normalizeRecipients(value: string | null | undefined): string {
 	return splitEmailAddressList(value).map((entry) => entry.trim()).filter(Boolean).join(", ");
 }
+
+/** A send named a draft that is gone: it was sent already, or discarded. */
+export class DraftGoneError extends Error {
+	constructor() {
+		super("This message was already sent or its draft was discarded.");
+		this.name = "DraftGoneError";
+	}
+}
+
+/**
+ * The stored draft a send continues, or null for a message composed from
+ * scratch. Naming a draft that no longer exists throws instead of sending what
+ * the request carries, so replaying a send whose response was lost cannot
+ * deliver the message twice.
+ */
+export function draftForSend<T>(draftId: string | null, draft: T | null | undefined): T | null {
+	if (!draftId) return null;
+	if (!draft) throw new DraftGoneError();
+	return draft;
+}

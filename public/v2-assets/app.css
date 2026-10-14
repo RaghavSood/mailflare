@@ -779,3 +779,34 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 @media (prefers-reduced-motion: reduce) {
 	* { animation: none !important; transition: none !important; }
 }
+
+/* ---------- offline ---------- */
+
+.offline-banner {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	max-width: 360px;
+	height: 32px;
+	padding: 0 12px;
+	border-radius: 16px;
+	background: var(--surface-3);
+	color: var(--text-2);
+	font-size: 13px;
+	flex: 0 1 auto;
+}
+.offline-banner[hidden] { display: none; }
+.offline-banner .icon { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.offline-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search input:disabled { cursor: not-allowed; opacity: .7; }
+.search input:disabled ~ .search-hint { display: none; }
+/* Undo depends on the server's state, so it waits for a connection. */
+body.is-offline [data-undo] { display: none; }
+
+@media (max-width: 899px) {
+	.offline-banner { max-width: 46vw; padding: 0 10px; font-size: 12px; }
+	/* Search is unavailable offline; give the phone topbar to the banner. */
+	body.is-offline .search { display: none; }
+	body.is-offline .offline-banner { flex: 1; max-width: none; }
+}
