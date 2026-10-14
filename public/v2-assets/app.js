@@ -555,6 +555,11 @@
 		return samePage ? "close" : "close-restore";
 	}
 
+	/** "Switch to classic" for the page shown; renderNav and renderTopbar build the same link. */
+	function classicSwitchHref(pathname) {
+		return `/v2/switch?to=classic&from=${encodeURIComponent(pathname)}`;
+	}
+
 	/* pure:end */
 
 	const coarsePointer = window.matchMedia("(pointer: coarse)");
@@ -686,6 +691,34 @@
 		update.type = "replace";
 		onSheetEntry = false;
 		closeSheets();
+	});
+
+	/* Back and Forward. htmx restores only #main (hx-history-elt), and it cuts the page
+	   it fetches down to #main before any out-of-band swap, so #nav would stay on the
+	   page Back left. historyCacheSize is 0, so every restore fetches the whole page:
+	   take #nav from that same response rather than asking the server again. */
+
+	/** The topbar's "Classic" link sits outside #nav and #main, so no swap updates it. */
+	function syncClassicLinks() {
+		const href = classicSwitchHref(location.pathname);
+		$$('a[href^="/v2/switch?to=classic"]').forEach((link) => link.setAttribute("href", href));
+	}
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id === "main") syncClassicLinks();
+	});
+
+	document.addEventListener("htmx:historyRestore", (event) => {
+		const response = event.detail.serverResponse;
+		const nav = typeof response === "string" ? new DOMParser().parseFromString(response, "text/html").getElementById("nav") : null;
+		// A sign-in page or an error has no #nav: keep the one shown.
+		if (nav) window.htmx.swap("#nav", nav.outerHTML, { swapStyle: "outerHTML", ignoreTitle: true });
+		syncClassicLinks();
+	});
+
+	// A restore that cannot reach the server would leave the page Back left under the
+	// new URL; load it in full instead, which the service worker answers from its cache.
+	document.addEventListener("htmx:historyCacheMiss", (event) => {
+		event.detail.xhr?.addEventListener("error", () => location.reload(), { once: true });
 	});
 
 	// The same for full-page links (Settings, Switch to classic).

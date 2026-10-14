@@ -4,6 +4,7 @@ const fitsWidth = () => document.documentElement.scrollWidth <= innerWidth;
 // A classic row's link is display: contents, so the row is the link's parent.
 const rowSelector = '*:has(> a[href^="/inbox/msg_"])';
 const hasRows = (sel) => [...document.querySelectorAll(sel)].some(window.__j.shown);
+const listShows = (heading) => location.pathname === `/v2/${heading.toLowerCase()}` && [...document.querySelectorAll(".tb-title")].some((el) => window.__j.shown(el) && window.__j.text(el) === heading);
 const sidebarOpen = () => {
 	const el = document.querySelector("#app-sidebar");
 	if (!el) return false;
@@ -29,16 +30,29 @@ const journey = {
 	},
 	steps: [
 		[
+			'Tap the menu button at the top left of the screen and tap "Archive" in the drawer',
+			async ({ device }) => {
+				await device.openDrawer();
+				await device.tap({ selector: "#nav .nav-label", text: "Archive" }, { effect: () => location.pathname === "/v2/archive", effectTimeout: 8_000 });
+			},
+		],
+		['Verify that the list heading reads "Archive"', ({ device }) => device.until(listShows, "Archive", { message: 'the "Archive" list heading' })],
+		["Press the Android Back button once", ({ device }) => device.back()],
+		['Verify that the list heading reads "Inbox"', ({ device }) => device.until(listShows, "Inbox", { message: 'the "Inbox" list heading after Back' })],
+		[
 			'Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer',
 			async ({ device }) => {
 				await device.openDrawer();
-				await device.tap({ selector: "#nav .nav-label", text: "Switch to classic" }, { effect: () => location.pathname === "/inbox", effectTimeout: 15_000 });
+				// Where it lands is the next step's check: after Back from Archive, a stale link opened the classic archive (#30).
+				await device.tap({ selector: "#nav .nav-label", text: "Switch to classic" }, { effect: () => !location.pathname.startsWith("/v2"), effectTimeout: 15_000 });
 				await device.settle();
 			},
 		],
 		[
-			"Verify that the classic inbox is shown with a menu button at the top left, a search field, and message rows that fit the screen width without a horizontal scrollbar",
+			"Verify that the classic inbox (not the archive) is shown with a menu button at the top left, a search field, and message rows that fit the screen width without a horizontal scrollbar",
 			async ({ device }) => {
+				const path = await device.eval(() => location.pathname);
+				expect(path === "/inbox", `"Switch to classic" opened ${path}, not the classic inbox`);
 				await device.until((sel) => location.pathname === "/inbox" && [...document.querySelectorAll(sel)].some(window.__j.shown), rowSelector, { timeout: 20_000, message: "classic inbox rows" });
 				const state = await device.eval(({ sel }) => {
 					const menu = document.querySelector('button[aria-label="Open menu"]');

@@ -4,8 +4,12 @@
 		The classic pages collapse their sidebar into a drawer below the md breakpoint and show settings as a tab strip.
 	</description>
 	<actions>
+		<action>Tap the menu button at the top left of the screen and tap "Archive" in the drawer</action>
+		<action>Verify that the list heading reads "Archive"</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the list heading reads "Inbox"</action>
 		<action>Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer</action>
-		<action>Verify that the classic inbox is shown with a menu button at the top left, a search field, and message rows that fit the screen width without a horizontal scrollbar</action>
+		<action>Verify that the classic inbox (not the archive) is shown with a menu button at the top left, a search field, and message rows that fit the screen width without a horizontal scrollbar</action>
 		<action>Tap the first message row</action>
 		<action>Verify that the message is shown full screen with a back button at the top left, and the message list is hidden</action>
 		<action>Tap the back button at the top left of the message</action>

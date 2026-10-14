@@ -3,6 +3,7 @@ import { APP, expect, fail } from "./harness.mjs";
 const FOLDERS = ["Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "All mail", "Spam", "Trash"];
 
 const listHeading = (device) => device.eval(() => [...document.querySelectorAll(".tb-title")].map((el) => window.__j.text(el)).find(Boolean) ?? null);
+const activeItems = (device) => device.eval(() => [...document.querySelectorAll("#nav .nav-item.is-active")].map((el) => window.__j.text(el.querySelector(".nav-label"))));
 
 const journey = {
 	setup: ({ device }) => device.startSignedIn(),
@@ -59,6 +60,21 @@ const journey = {
 			async ({ device }) => {
 				await device.until(() => location.pathname === "/v2/inbox" && [...document.querySelectorAll(".tb-title")].some((el) => window.__j.shown(el) && window.__j.text(el) === "Inbox"), null, { message: 'the "Inbox" list heading after Back' }).catch(async (error) => {
 					fail(`${error.message}; the page is ${(await device.page()).url()}, heading "${await listHeading(device)}"`);
+				});
+			},
+		],
+		["Tap the menu button at the top left of the screen to open the drawer", async ({ device }) => {
+			await device.openDrawer();
+			await waitDrawer(device, true);
+		}],
+		[
+			'Verify that "Inbox" is the highlighted item in the drawer and "Sent" is not',
+			async ({ device }) => {
+				await device.until(() => {
+					const active = [...document.querySelectorAll("#nav .nav-item.is-active")].map((el) => window.__j.text(el.querySelector(".nav-label")));
+					return active.length === 1 && active[0] === "Inbox";
+				}, null, { timeout: 3_000, message: 'the drawer highlighting "Inbox"' }).catch(async (error) => {
+					fail(`${error.message}; highlighted: ${JSON.stringify(await activeItems(device))}`);
 				});
 			},
 		],

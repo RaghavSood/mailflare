@@ -18,8 +18,8 @@ const end = source.indexOf("/* pure:end */");
 assert.ok(start > 0 && end > start, "app.js keeps its pure:start / pure:end markers");
 const context = vm.createContext({});
 vm.runInContext(`${source.slice(start, end)}
-	this.helpers = { swipeOutcome, splitRecipients, isCompleteAddress, parseRecipient, sheetHistoryStep, sheetPopstate };`, context);
-const { swipeOutcome, splitRecipients, isCompleteAddress, parseRecipient, sheetHistoryStep, sheetPopstate } = context.helpers;
+	this.helpers = { swipeOutcome, splitRecipients, isCompleteAddress, parseRecipient, sheetHistoryStep, sheetPopstate, classicSwitchHref };`, context);
+const { swipeOutcome, splitRecipients, isCompleteAddress, parseRecipient, sheetHistoryStep, sheetPopstate, classicSwitchHref } = context.helpers;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 test("a swipe commits past 35% of the row and only in a direction that has an action", () => {
@@ -81,4 +81,11 @@ test("Forward onto a sheet's entry steps over it", () => {
 	assert.equal(pop({}), "back");
 	assert.equal(pop({ canGoForward: true }), "forward");
 	assert.equal(pop({ open: true }), "stay");
+});
+
+test("the classic link names the page shown, encoded as the server encodes it", () => {
+	assert.equal(classicSwitchHref("/v2/inbox"), "/v2/switch?to=classic&from=%2Fv2%2Finbox");
+	assert.equal(classicSwitchHref("/v2/archive"), "/v2/switch?to=classic&from=%2Fv2%2Farchive");
+	assert.equal(classicSwitchHref("/v2/folder/fld_a-B_1"), "/v2/switch?to=classic&from=%2Fv2%2Ffolder%2Ffld_a-B_1");
+	assert.equal(classicSwitchHref("/v2/inbox/msg_Dd2UpaK50_W1gVevZLBdD"), "/v2/switch?to=classic&from=%2Fv2%2Finbox%2Fmsg_Dd2UpaK50_W1gVevZLBdD");
 });
