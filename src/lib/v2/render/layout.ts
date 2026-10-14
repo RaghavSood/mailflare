@@ -22,6 +22,10 @@ const HTMX_CONFIG = JSON.stringify({
 	defaultFocusScroll: false,
 	getCacheBusterParam: false,
 	globalViewTransitions: false,
+	// htmx wires a swapped-in page's hx- attributes, and app.js sets it up (closing menus),
+	// only once it settles; no CSS animates the settle, so do it at once rather than leave
+	// 20 ms in which a click on the new page is dropped or its menu shut again (#31).
+	defaultSettleDelay: 0,
 });
 
 export type NavState = {

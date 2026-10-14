@@ -20,6 +20,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `14-saved-copy-recovers-when-the-server-returns` | Server out of reach while the device is online: saved copy, "Couldn't reach Mailflare", recovery |
 | `15-discard-offline-draft` | Drafts discarded offline (one only on the device, one the server had) stay gone on reconnect |
 | `16-act-inside-a-conversation` | Toolbar Move → Archive, Star and Snooze → Next week from inside a conversation, each checked in its view; Move → Archive queued offline and applied on reconnect |
+| `17-tablet-thread-actions` | Tablet band (the phone set to 1280×800 at density 200 for the journey, reset in teardown): a conversation opens beside its list, and its ⋮ dropdown and details respond to a tap made as quickly as adb allows after opening it (#31) |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 

@@ -436,6 +436,21 @@ test("a send goes ahead only with the claim on its draft", () => {
 	assert.throws(() => v2.draftForSend("msg_1", { outcome: "sending" }), /already being sent/);
 });
 
+test("v2 pages tell htmx to settle a swap at once (#31)", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = { env: {}, request: new Request(url), user: { id: "usr_1", email: "me@example.com", name: "Me" }, url, mailboxes: [{ id: "mbx_1", address: "me@example.com" }], scopeMailboxIds: ["mbx_1"], selectedMailboxId: null, theme: "system", shortcutsEnabled: true, htmx: false };
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const out = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	const content = /<meta name="htmx-config" content="([^"]*)">/.exec(out)?.[1];
+	assert.ok(content, "the page carries an htmx-config meta");
+	const config = JSON.parse(content.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&"));
+	// htmx wires a swapped-in page's hx- attributes, and app.js runs onPage (which closes menus) and
+	// the tablet split list, only when the swap settles. Any settle delay is a window in which a click
+	// on the new page does nothing: the details toggle has no listener yet, and a menu opened in it is
+	// shut again.
+	assert.equal(config.defaultSettleDelay, 0);
+});
+
 test("touch markup: the keyboard resizes the page, the rail names its items, recipients get an email keyboard, details can close", () => {
 	const url = new URL("https://mail.example.com/v2/inbox");
 	const ctx = {
