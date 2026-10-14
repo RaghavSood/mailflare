@@ -114,14 +114,24 @@ export class DraftGoneError extends Error {
 	}
 }
 
+/** A send named a draft another request is sending right now. */
+export class DraftSendingError extends Error {
+	constructor() {
+		super("This message is already being sent. If it doesn't appear in Sent, try again in a few minutes.");
+		this.name = "DraftSendingError";
+	}
+}
+
 /**
  * The stored draft a send continues, or null for a message composed from
- * scratch. Naming a draft that no longer exists throws instead of sending what
- * the request carries, so replaying a send whose response was lost cannot
- * deliver the message twice.
+ * scratch. A send that names a draft goes ahead only if it won the claim on
+ * it: a draft that is gone or being sent by another request throws instead of
+ * sending what this request carries, so a replayed send, even one racing the
+ * original, cannot deliver the message twice.
  */
-export function draftForSend<T>(draftId: string | null, draft: T | null | undefined): T | null {
+export function draftForSend<T>(draftId: string | null, claim: { outcome: "claimed"; draft: T } | { outcome: "gone" | "sending" } | null): T | null {
 	if (!draftId) return null;
-	if (!draft) throw new DraftGoneError();
-	return draft;
+	if (claim?.outcome === "claimed") return claim.draft;
+	if (claim?.outcome === "sending") throw new DraftSendingError();
+	throw new DraftGoneError();
 }

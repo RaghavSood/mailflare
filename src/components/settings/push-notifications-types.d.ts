@@ -1,5 +1,8 @@
-/** The opt-in's state on this device; `unavailable` means the server has no VAPID key. */
-export type PushControlState = "loading" | "unavailable" | "unsupported" | "install" | "blocked" | "off" | "on" | "busy";
+/**
+ * The opt-in's state on this device; `unavailable` means the server has no
+ * VAPID key, `offline` that the page could not ask it.
+ */
+export type PushControlState = "loading" | "unavailable" | "offline" | "unsupported" | "install" | "blocked" | "off" | "on" | "busy";
 
 export type PushKeyResponse = {
 	publicKey: string | null;

@@ -273,6 +273,7 @@ kbd {
 .push-toggle[data-state="on"] .icon { color: var(--accent); }
 .push-toggle[data-state="blocked"], .push-toggle[data-state="install"] { opacity: 0.8; }
 .push-toggle:disabled { cursor: progress; }
+.push-toggle[data-offline] { opacity: 0.6; cursor: not-allowed; }
 .folder-dot { display: inline-grid; }
 
 /* ---------- main card ---------- */

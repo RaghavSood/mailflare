@@ -1557,6 +1557,9 @@
 		install: "On iPhone and iPad, notifications work only from the installed app: Share, then Add to Home Screen.",
 		busy: "",
 	};
+	// Turning notifications on or off needs the push service and the server: offline,
+	// the control keeps showing the known state but changes nothing.
+	const PUSH_OFFLINE = "You're offline. Turn notifications on or off once you're back online.";
 	let pushState = "unsupported";
 
 	const isIos = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1574,11 +1577,14 @@
 	}
 
 	function applyPushState() {
+		const offline = !navigator.onLine && (pushState === "on" || pushState === "off");
 		for (const button of $$("[data-push]")) {
 			button.hidden = pushState === "unsupported";
 			button.dataset.state = pushState;
 			button.disabled = pushState === "busy";
-			button.title = PUSH_TITLES[pushState] ?? "";
+			button.toggleAttribute("data-offline", offline);
+			button.setAttribute("aria-disabled", offline ? "true" : "false");
+			button.title = offline ? PUSH_OFFLINE : PUSH_TITLES[pushState] ?? "";
 			button.setAttribute("aria-pressed", pushState === "on" ? "true" : "false");
 			const label = $("[data-push-label]", button);
 			if (label) label.textContent = PUSH_LABELS[pushState] ?? "";
@@ -1588,6 +1594,14 @@
 	function setPushState(state) {
 		pushState = state;
 		applyPushState();
+	}
+
+	/** What to tell the user when turning notifications on or off failed. */
+	function pushErrorMessage(error, fallback) {
+		// fetch rejects with a TypeError ("Failed to fetch") when the connection drops mid-change.
+		if (!navigator.onLine || error instanceof TypeError) return PUSH_OFFLINE;
+		if (error instanceof DOMException && error.name === "AbortError") return "Couldn't reach the push service. Check your connection and try again.";
+		return error instanceof Error && error.message ? error.message : fallback;
 	}
 
 	/** The /v2/ registration once it has an active worker (pushManager needs one). */
@@ -1681,7 +1695,7 @@
 			toast("Notifications are on for this device.");
 		} catch (error) {
 			setPushState(await readPushState());
-			toast(error instanceof Error && error.message ? error.message : "Could not turn on notifications.");
+			toast(pushErrorMessage(error, "Could not turn on notifications."));
 		}
 	}
 
@@ -1697,20 +1711,27 @@
 			toast("Notifications are off for this device.");
 		} catch (error) {
 			setPushState(await readPushState());
-			toast(error instanceof Error && error.message ? error.message : "Could not turn off notifications.");
+			toast(pushErrorMessage(error, "Could not turn off notifications."));
 		}
 	}
 
 	document.addEventListener("click", (event) => {
 		const button = event.target instanceof Element ? event.target.closest("[data-push]") : null;
 		if (!button) return;
-		if (pushState === "off") subscribePush();
+		// Nothing may change offline: a half-done change would leave the browser and server disagreeing.
+		if (!navigator.onLine && (pushState === "off" || pushState === "on")) toast(PUSH_OFFLINE);
+		else if (pushState === "off") subscribePush();
 		else if (pushState === "on") unsubscribePush();
 		else if (pushState === "install" || pushState === "blocked") toast(PUSH_TITLES[pushState]);
 	});
 	// #nav is re-rendered on every navigation; keep the control's state on it.
 	document.addEventListener("htmx:afterSettle", applyPushState);
 	document.addEventListener("htmx:oobAfterSwap", applyPushState);
+	window.addEventListener("offline", applyPushState);
+	// Back online, ask the server again: it may have dropped this device while we could not check.
+	window.addEventListener("online", () => {
+		if (pushState === "on" || pushState === "off") readPushState().then(setPushState);
+	});
 
 	readPushState().then(setPushState);
 

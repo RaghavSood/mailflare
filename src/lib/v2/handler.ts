@@ -28,7 +28,7 @@ import {
 	sendCompose,
 	type ComposeInput,
 } from "./data/compose";
-import { DraftGoneError, parseFromValue } from "./data/compose-utils";
+import { DraftGoneError, DraftSendingError, parseFromValue } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
@@ -347,6 +347,8 @@ async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
 	} catch (error) {
 		// Already sent (a replay whose first response was lost) or discarded: never send it again.
 		if (error instanceof DraftGoneError) return htmlResponse(error.message, { status: 410 });
+		// Another request (the original this one replays) is sending it now.
+		if (error instanceof DraftSendingError) return htmlResponse(error.message, { status: 409 });
 		return htmlResponse(error instanceof Error ? error.message : "Sending failed.", { status: 422 });
 	}
 	const returnTo = safeReturnPath(String(form.get("return") ?? ""));

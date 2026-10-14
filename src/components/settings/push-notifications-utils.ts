@@ -13,6 +13,30 @@ export function resolvePushControlState(environment: PushEnvironment): PushContr
 	return "on";
 }
 
+export const PUSH_OFFLINE_MESSAGE = "You're offline. Turn notifications on or off once you're back online.";
+
+/** Loading the server's key failed: offline is not the same as push not being configured. */
+export function pushKeyFailureState(error: unknown, online: boolean): "offline" | "unavailable" {
+	return !online || error instanceof TypeError ? "offline" : "unavailable";
+}
+
+/**
+ * The state to show: still checking while offline is offline. An "offline"
+ * result stays until the reload that reconnecting starts replaces it, since a
+ * connection that fails while the browser reports online is offline too.
+ */
+export function shownPushControlState(state: PushControlState, online: boolean): PushControlState {
+	return !online && state === "loading" ? "offline" : state;
+}
+
+/** What to tell the user when turning notifications on or off failed. Mirrors pushErrorMessage in public/v2-assets/app.js. */
+export function describePushError(error: unknown, online: boolean, fallback: string): string {
+	// fetch rejects with a TypeError ("Failed to fetch") when the connection drops mid-change.
+	if (!online || error instanceof TypeError) return PUSH_OFFLINE_MESSAGE;
+	if (error instanceof DOMException && error.name === "AbortError") return "Couldn't reach the push service. Check your connection and try again.";
+	return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
 	const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
 	const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));

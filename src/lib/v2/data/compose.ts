@@ -11,6 +11,7 @@ import { buildSnippet } from "@/lib/email/parse";
 import { sendEmail } from "@/lib/email/send";
 import { getAuthorizedSenderAddress, getReplyFromAddress } from "@/lib/email/sender";
 import { formatEmailAddress, getEmailAddressList } from "@/lib/email/address";
+import { claimDraftForSend, releaseDraftClaim } from "@/lib/email/draft-claim";
 import { newId } from "@/lib/ids";
 import type { V2Mailbox } from "../types";
 import { buildQuoteHtml, buildReplyRecipients, draftForSend, htmlToMailText, normalizeRecipients, replySubject, type ReplyMode } from "./compose-utils";
@@ -209,39 +210,55 @@ export async function createReplyDraft(
 	return id;
 }
 
-/** Send what the composer holds, with the draft's quote and stored attachments. */
+/**
+ * Send what the composer holds, with the draft's quote and stored attachments.
+ * A send that names a draft claims it first, so a second request for the same
+ * draft (a replay racing the original) is refused instead of sending again; a
+ * failed send gives the claim back and the draft stays in Drafts.
+ */
 export async function sendCompose(
 	env: CloudflareEnv,
 	user: SessionUser,
 	input: ComposeInput & { uploads: AttachmentContent[]; scheduledAt?: string | null },
 ): Promise<{ messageId: string; scheduled?: boolean }> {
 	const db = getDb(env);
-	let quote: string | null = null;
-	let stored: AttachmentContent[] = [];
-	let threading = { inReplyTo: input.inReplyTo, references: input.references, threadId: input.threadId };
-	const draft = draftForSend(input.draftId, input.draftId ? await selectDraftWithBody(db, user.id, input.draftId) : null);
-	if (draft) {
-		quote = splitQuotedHtml(draft.htmlBody).quoted;
-		stored = await loadMessageAttachmentContents(env, draft.id);
-		threading = { inReplyTo: draft.inReplyTo, references: draft.references, threadId: draft.threadId };
+	const claim = input.draftId ? await claimDraftForSend(db, user.id, input.draftId) : null;
+	const draft = draftForSend(input.draftId, claim);
+	let result: { messageId: string; scheduled?: boolean };
+	try {
+		const quote = draft ? splitQuotedHtml(draft.htmlBody).quoted : null;
+		const stored = draft ? await loadMessageAttachmentContents(env, draft.id) : [];
+		const threading = draft
+			? { inReplyTo: draft.inReplyTo, references: draft.references, threadId: draft.threadId }
+			: { inReplyTo: input.inReplyTo, references: input.references, threadId: input.threadId };
+		const html = quote ? `${input.bodyHtml}${wrapQuotedHtml(quote)}` : input.bodyHtml;
+		result = await sendEmail(env, {
+			userId: user.id,
+			mailboxId: input.mailboxId,
+			from: input.from,
+			to: normalizeRecipients(input.to),
+			cc: normalizeRecipients(input.cc) || undefined,
+			bcc: normalizeRecipients(input.bcc) || undefined,
+			subject: input.subject || "(no subject)",
+			html,
+			text: htmlToMailText(html),
+			inReplyTo: threading.inReplyTo,
+			references: threading.references,
+			threadId: threading.threadId,
+			attachments: [...stored, ...input.uploads],
+			scheduledAt: input.scheduledAt ?? undefined,
+		});
+	} catch (error) {
+		if (claim?.outcome === "claimed") await releaseDraftClaim(db, claim.draft.id, claim.claimedAt);
+		throw error;
 	}
-	const html = quote ? `${input.bodyHtml}${wrapQuotedHtml(quote)}` : input.bodyHtml;
-	const result = await sendEmail(env, {
-		userId: user.id,
-		mailboxId: input.mailboxId,
-		from: input.from,
-		to: normalizeRecipients(input.to),
-		cc: normalizeRecipients(input.cc) || undefined,
-		bcc: normalizeRecipients(input.bcc) || undefined,
-		subject: input.subject || "(no subject)",
-		html,
-		text: htmlToMailText(html),
-		inReplyTo: threading.inReplyTo,
-		references: threading.references,
-		threadId: threading.threadId,
-		attachments: [...stored, ...input.uploads],
-		scheduledAt: input.scheduledAt ?? undefined,
-	});
-	if (input.draftId) await discardDraft(env, user, input.draftId);
+	if (draft) {
+		try {
+			await discardDraft(env, user, draft.id);
+		} catch (error) {
+			// It went out: keep the claim and report success, or a retry could send it twice.
+			console.error(`Failed to remove sent draft ${draft.id}`, error);
+		}
+	}
 	return result;
 }

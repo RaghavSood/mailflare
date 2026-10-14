@@ -242,6 +242,8 @@ export const messages = sqliteTable(
 		spamSignals: text("spam_signals"),
 		spamAnalyzedAt: integer("spam_analyzed_at", { mode: "timestamp" }),
 		spamAnalysisError: text("spam_analysis_error"),
+		// When a send of this draft started; see claimDraftForSend.
+		sendClaimedAt: integer("send_claimed_at", { mode: "timestamp" }),
 		createdAt: integer("created_at", { mode: "timestamp" })
 			.notNull()
 			.$defaultFn(() => new Date()),

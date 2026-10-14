@@ -21,14 +21,14 @@ await build({
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
 			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
-			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError } from "./src/lib/v2/data/compose-utils.ts";
+			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
 			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
 			export { renderComposer } from "./src/lib/v2/render/compose.ts";
 			export { renderDetails } from "./src/lib/v2/render/thread.ts";
-			export { resolvePushControlState } from "./src/components/settings/push-notifications-utils.ts";
+			export { resolvePushControlState, shownPushControlState, pushKeyFailureState, describePushError, PUSH_OFFLINE_MESSAGE } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
 		sourcefile: "v2-test-entry.js",
@@ -336,6 +336,26 @@ test("the opt-in state: install first on iOS outside the app, blocked, off, on, 
 	assert.equal(v2.resolvePushControlState({ ...env, registered: null }), "on");
 });
 
+test("offline, the classic push card says so instead of claiming push is not configured", () => {
+	// The key could not be loaded: offline (or a dropped connection) is not "unavailable".
+	assert.equal(v2.pushKeyFailureState(new TypeError("Failed to fetch"), true), "offline");
+	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), false), "offline");
+	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), true), "unavailable");
+	// Opened offline it does not sit on "Checking...".
+	assert.equal(v2.shownPushControlState("loading", false), "offline");
+	assert.equal(v2.shownPushControlState("loading", true), "loading");
+	assert.equal(v2.shownPushControlState("offline", true), "offline", "a failing connection the browser calls online");
+	assert.equal(v2.shownPushControlState("on", false), "on", "the known state stays visible offline");
+	assert.equal(v2.shownPushControlState("off", true), "off");
+	// Failures read as offline, never as the raw "Failed to fetch".
+	assert.equal(v2.describePushError(new TypeError("Failed to fetch"), true, "x"), v2.PUSH_OFFLINE_MESSAGE);
+	assert.equal(v2.describePushError(new Error("anything"), false, "x"), v2.PUSH_OFFLINE_MESSAGE);
+	assert.match(v2.describePushError(new DOMException("Registration failed - push service error", "AbortError"), true, "x"), /push service/);
+	assert.equal(v2.describePushError(new Error("This key is out of date."), true, "x"), "This key is out of date.");
+	assert.equal(v2.describePushError("nope", true, "Could not turn on notifications"), "Could not turn on notifications");
+	assert.match(v2.PUSH_OFFLINE_MESSAGE, /^You're offline/);
+});
+
 /** Runs public/sw.js against a fake ServiceWorkerGlobalScope and returns its listeners and spies. */
 async function loadServiceWorker({ windows = [] } = {}) {
 	const { readFile } = await import("node:fs/promises");
@@ -404,12 +424,15 @@ test("notification click focuses an open v2 window and opens the message there, 
 	assert.equal(closed, 2);
 });
 
-test("a send that names a vanished draft is refused instead of sent again", () => {
+test("a send goes ahead only with the claim on its draft", () => {
 	assert.equal(v2.draftForSend(null, null), null, "a fresh message has no draft");
 	const draft = { id: "msg_1" };
-	assert.equal(v2.draftForSend("msg_1", draft), draft);
-	assert.throws(() => v2.draftForSend("msg_1", null), v2.DraftGoneError);
-	assert.throws(() => v2.draftForSend("msg_1", undefined), /already sent or its draft was discarded/);
+	assert.equal(v2.draftForSend("msg_1", { outcome: "claimed", draft }), draft);
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "gone" }), v2.DraftGoneError);
+	assert.throws(() => v2.draftForSend("msg_1", null), /already sent or its draft was discarded/);
+	// Another request holds the claim: refused, not sent a second time.
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "sending" }), v2.DraftSendingError);
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "sending" }), /already being sent/);
 });
 
 test("touch markup: the keyboard resizes the page, the rail names its items, recipients get an email keyboard, details can close", () => {
