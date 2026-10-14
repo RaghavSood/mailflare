@@ -47,6 +47,15 @@
       "GITHUB_UPDATE_REPO": {
         "description": "Your github repository that connect to cloudflare worker"
       },
+      "VAPID_PUBLIC_KEY": {
+        "description": "Optional. Web Push public key (base64url, uncompressed P-256). Generate a pair with `node scripts/generate-vapid-keys.mjs`. Leave all three VAPID values unset to turn push notifications off."
+      },
+      "VAPID_PRIVATE_KEY": {
+        "description": "Optional. Web Push private key (base64url, 32 bytes) matching VAPID_PUBLIC_KEY. Store it as a secret."
+      },
+      "VAPID_SUBJECT": {
+        "description": "Optional. Contact push services can reach you at, as `mailto:you@example.com` or an https URL."
+      },
       "CF_EMAIL": {
         "description": "Legacy Global API Key auth only. Use this with `CF_API_KEY` instead of `CF_TOKEN`."
       },

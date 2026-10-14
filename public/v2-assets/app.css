@@ -269,6 +269,10 @@ kbd {
 .nav-count.is-total { font-weight: 400; color: var(--muted); }
 .nav-item.subtle { color: var(--muted); font-size: 13px; }
 .sidebar-foot { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 1px; }
+.push-toggle[hidden] { display: none; }
+.push-toggle[data-state="on"] .icon { color: var(--accent); }
+.push-toggle[data-state="blocked"], .push-toggle[data-state="install"] { opacity: 0.8; }
+.push-toggle:disabled { cursor: progress; }
 .folder-dot { display: inline-grid; }
 
 /* ---------- main card ---------- */

@@ -78,6 +78,16 @@ npm run dev
 
 Add your Cloudflare credentials to `.dev.vars`, then open [http://localhost:3000](http://localhost:3000). For sample local data, run `npm run db:seed` while the development server is running.
 
+### Push notifications
+
+New-mail push notifications are optional and need a VAPID key pair. Generate one with Web Crypto (no dependencies):
+
+```bash
+node scripts/generate-vapid-keys.mjs mailto:you@example.com
+```
+
+It prints `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT`. Put them in `.dev.vars` locally, set them with `wrangler secret put` on Cloudflare, or as environment variables for the Docker image. The admin overview shows whether push is configured. See [deployment](docs/deployment.md#push-notifications).
+
 ## Documentation
 
 - [Deployment and configuration](docs/deployment.md)

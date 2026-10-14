@@ -4,7 +4,7 @@ import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "2";
+export const ASSET_VERSION = "3";
 export const HTMX_VERSION = "2.0.11";
 
 /** The service worker's URL carries the asset versions it precaches (public/sw.js). */
@@ -73,11 +73,20 @@ export function renderNav(ctx: V2Context, nav: NavState): Html {
 		<div class="nav-list">${items}</div>
 		${folders.length ? html`<div class="nav-heading">Folders</div><div class="nav-list">${folders}</div>` : ""}
 		<div class="sidebar-foot">
+			${ctx.vapidPublicKey ? renderPushToggle() : ""}
 			<a class="nav-item subtle" href="/settings/account" hx-boost="false">${icon("settings")}<span class="nav-label">Settings</span></a>
 			<button type="button" class="nav-item subtle" data-help>${icon("keyboard")}<span class="nav-label">Keyboard shortcuts</span><kbd>?</kbd></button>
 			<a class="nav-item subtle" href="${`/v2/switch?to=classic&from=${encodeURIComponent(ctx.url.pathname)}`}" hx-boost="false">${icon("layout")}<span class="nav-label">Switch to classic</span></a>
 		</div>
 	</nav>`;
+}
+
+/**
+ * Opt-in for new-mail notifications. Hidden until app.js knows the browser's
+ * state (on, off, blocked, or "install first" on iOS) and fills in the label.
+ */
+function renderPushToggle(): Html {
+	return html`<button type="button" class="nav-item subtle push-toggle" data-push hidden>${icon("bell")}<span class="nav-label" data-push-label>Notifications</span></button>`;
 }
 
 function themeIcon(theme: V2Context["theme"]): Html {
@@ -136,7 +145,7 @@ export function renderPage(
 <script src="${`/v2-assets/htmx.min.js?v=${HTMX_VERSION}`}" defer></script>
 <script src="${`/v2-assets/app.js?v=${ASSET_VERSION}`}" defer></script>
 </head>
-<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}" data-sw="${SERVICE_WORKER_URL}">
+<body hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-select-oob="#nav,#toast" data-shortcuts="${ctx.shortcutsEnabled ? "on" : "off"}" data-classic-href="${v2ToClassic(ctx.url.pathname)}" data-sw="${SERVICE_WORKER_URL}"${ctx.vapidPublicKey ? html` data-vapid-key="${ctx.vapidPublicKey}"` : ""}>
 <a class="skip-link" href="#main">Skip to content</a>
 <div class="progress" aria-hidden="true"></div>
 <datalist id="v2-contacts"></datalist>

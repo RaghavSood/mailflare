@@ -6,8 +6,9 @@ import {
 	type InboundQueueMessage,
 } from "./src/lib/email/inbound";
 import { processOutboundQueue, type OutboundQueueMessage } from "./src/lib/email/send";
-import { isInboundQueueMessage, isWebhookRetryMessage } from "./worker-utils";
+import { isInboundQueueMessage, isPushMessage, isWebhookRetryMessage } from "./worker-utils";
 import { processWebhookRetry, type WebhookRetryMessage } from "./src/lib/email/webhooks";
+import { processPushMessage } from "./src/lib/push/delivery";
 import { resolveIncomingMail, forwardMessage } from "./src/lib/email/incoming";
 import { getUserFromSession } from "./src/lib/auth/session";
 import { getSessionTokenFromRequest } from "./src/lib/realtime/utils";
@@ -83,6 +84,9 @@ export default {
 					await processInboundMessage(env, msg.body);
 				} else if (isWebhookRetryMessage(msg.body)) {
 					await processWebhookRetry(env, msg.body as WebhookRetryMessage);
+				} else if (isPushMessage(msg.body)) {
+					// Retries are re-enqueued per subscription inside, so other devices are not notified twice.
+					await processPushMessage(env, msg.body);
 				} else {
 					await processOutboundQueue(env, msg.body as OutboundQueueMessage);
 				}

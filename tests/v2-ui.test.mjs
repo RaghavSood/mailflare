@@ -26,6 +26,7 @@ await build({
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
 			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
+			export { resolvePushControlState } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
 		sourcefile: "v2-test-entry.js",
@@ -281,4 +282,114 @@ test("v2 pages link the web app manifest and hand app.js the versioned service w
 	const sizes = manifest.icons.map((icon) => `${icon.sizes}:${icon.purpose}`);
 	assert.deepEqual(sizes.sort(), ["192x192:any", "512x512:any", "512x512:maskable"]);
 	for (const icon of manifest.icons) await readFile(join(root, "public", icon.src));
+});
+
+test("with a VAPID key the body carries it and the sidebar has the notifications toggle; without one, neither", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const base = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const key = "BIuNlFWwIuxLrm4ojdfE77tWjtlPL1m1ZSPim_3nmBbkip0zmTH6-h4xblviIyt9prcYBwhAEB5O_CgqMfLs-HM";
+	const on = String(v2.renderPage({ ...base, vapidPublicKey: key }, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.ok(on.includes(` data-vapid-key="${key}"`), "body carries the public key");
+	const toggle = /<button type="button" class="nav-item subtle push-toggle" data-push hidden>[\s\S]*?<\/button>/.exec(on)?.[0];
+	assert.ok(toggle, "sidebar footer renders the toggle, hidden until app.js reads the browser's state");
+	assert.match(toggle, /data-push-label>Notifications</);
+	assert.ok(on.indexOf("data-push") < on.indexOf('href="/settings/account"'), "toggle sits in the sidebar footer above Settings");
+
+	const off = String(v2.renderPage({ ...base, vapidPublicKey: null }, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.ok(!off.includes("data-vapid-key"));
+	assert.ok(!off.includes("data-push"));
+});
+
+test("the opt-in state: install first on iOS outside the app, blocked, off, on, and off again after a key change or a sign-out", () => {
+	const key = "BKEY";
+	const env = { publicKey: key, supported: true, ios: false, standalone: false, permission: "granted", subscribedKey: key, subscribed: true, registered: true };
+	assert.equal(v2.resolvePushControlState(env), "on");
+	assert.equal(v2.resolvePushControlState({ ...env, publicKey: null }), "unavailable");
+	assert.equal(v2.resolvePushControlState({ ...env, ios: true }), "install");
+	assert.equal(v2.resolvePushControlState({ ...env, ios: true, standalone: true }), "on");
+	assert.equal(v2.resolvePushControlState({ ...env, supported: false }), "unsupported");
+	assert.equal(v2.resolvePushControlState({ ...env, permission: "denied" }), "blocked");
+	assert.equal(v2.resolvePushControlState({ ...env, permission: "default" }), "off");
+	assert.equal(v2.resolvePushControlState({ ...env, subscribed: false, subscribedKey: null }), "off");
+	assert.equal(v2.resolvePushControlState({ ...env, subscribedKey: "OLDKEY" }), "off");
+	// After a sign-out the server has no row: the browser's leftover subscription is not "on".
+	assert.equal(v2.resolvePushControlState({ ...env, registered: false }), "off");
+	// The check could not be made (offline): trust the browser.
+	assert.equal(v2.resolvePushControlState({ ...env, registered: null }), "on");
+});
+
+/** Runs public/sw.js against a fake ServiceWorkerGlobalScope and returns its listeners and spies. */
+async function loadServiceWorker({ windows = [] } = {}) {
+	const { readFile } = await import("node:fs/promises");
+	const { runInNewContext } = await import("node:vm");
+	const source = await readFile(join(root, "public/sw.js"), "utf8");
+	const listeners = {};
+	const shown = [];
+	const opened = [];
+	const self = {
+		location: new URL("https://mail.example.com/sw.js?v=3&htmx=2.0.11"),
+		addEventListener: (type, listener) => { listeners[type] = listener; },
+		registration: { showNotification: async (title, options) => { shown.push({ title, options }); } },
+		clients: {
+			matchAll: async () => windows,
+			openWindow: async (url) => { opened.push(url); },
+			claim: async () => {},
+		},
+	};
+	runInNewContext(source, { self, URL, Uint8Array, atob, JSON, console, caches: {}, fetch: async () => { throw new Error("offline"); } });
+	async function dispatch(type, event) {
+		let pending;
+		listeners[type]({ ...event, waitUntil: (promise) => { pending = promise; } });
+		await pending;
+	}
+	return { listeners, shown, opened, dispatch };
+}
+
+test("service worker shows a notification for every push, titled by sender and tagged by message", async () => {
+	const sw = await loadServiceWorker();
+	await sw.dispatch("push", { data: { json: () => ({ messageId: "msg_42", from: "alice@example.org", fromName: "Alice", subject: "Lunch?" }) } });
+	await sw.dispatch("push", { data: { json: () => ({ messageId: "msg_43", from: "bob@example.org", fromName: null, subject: null }) } });
+	// A push that cannot be read still shows something, as userVisibleOnly requires.
+	await sw.dispatch("push", { data: { json: () => { throw new SyntaxError("bad"); } } });
+	assert.deepEqual(JSON.parse(JSON.stringify(sw.shown)), [
+		{ title: "Alice", options: { body: "Lunch?", tag: "msg_42", icon: "/icon-192.png", data: { url: "/v2/inbox/msg_42" } } },
+		{ title: "bob@example.org", options: { body: "(no subject)", tag: "msg_43", icon: "/icon-192.png", data: { url: "/v2/inbox/msg_43" } } },
+		{ title: "New mail", options: { body: "(no subject)", icon: "/icon-192.png", data: { url: "/v2/inbox" } } },
+	]);
+	assert.ok(sw.listeners.pushsubscriptionchange, "re-subscribes when the push service rotates the subscription");
+});
+
+test("notification click focuses an open v2 window and opens the message there, or opens a new window", async () => {
+	const messages = [];
+	const v2Window = {
+		url: "https://mail.example.com/v2/inbox",
+		focus: async () => v2Window,
+		postMessage: (message) => messages.push(message),
+		navigate: async () => {},
+	};
+	const classicWindow = { url: "https://mail.example.com/settings/account", focus: async () => classicWindow, postMessage: () => assert.fail("classic window") };
+	let closed = 0;
+	const notification = { data: { url: "/v2/inbox/msg_42" }, close: () => { closed += 1; } };
+
+	const open = await loadServiceWorker({ windows: [classicWindow, v2Window] });
+	await open.dispatch("notificationclick", { notification });
+	assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ type: "mf:open", url: "https://mail.example.com/v2/inbox/msg_42" }]);
+	assert.equal(open.opened.length, 0);
+
+	const none = await loadServiceWorker({ windows: [classicWindow] });
+	await none.dispatch("notificationclick", { notification });
+	assert.deepEqual([...none.opened], ["https://mail.example.com/v2/inbox/msg_42"]);
+	assert.equal(closed, 2);
 });

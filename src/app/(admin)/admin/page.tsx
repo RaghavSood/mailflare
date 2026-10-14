@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BadgeDollarSign, Globe2, KeyRound, Mail, Palette, Settings, Users, Webhook } from "lucide-react";
+import { AdminPushCard } from "@/components/admin-push-card";
 import { AdminUpdateCard } from "@/components/admin-update-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -86,6 +87,9 @@ export default function AdminSettingsPage() {
 			</div>
 			<div className="mt-8">
 				<AdminUpdateCard />
+			</div>
+			<div className="mt-4">
+				<AdminPushCard />
 			</div>
 		</div>
 	);

@@ -7,6 +7,7 @@ interface CloudflareEnv {
 	OUTBOUND_QUEUE: Queue<
 		| import("./src/lib/email/send").OutboundQueueMessage
 		| import("./src/lib/email/webhooks").WebhookRetryMessage
+		| import("./src/lib/push/types").PushQueueMessage
 	>;
 	ASSETS: Fetcher;
 	IMAGES: ImagesBinding;
@@ -30,4 +31,10 @@ interface CloudflareEnv {
 	CF_ACCOUNT_ID?: string;
 	/** Public origin of this install (https://mail.example.com) when it sits behind a proxy. */
 	APP_URL?: string;
+	/** Web Push application server key: the uncompressed P-256 public point, base64url. */
+	VAPID_PUBLIC_KEY?: string;
+	/** The matching private scalar, base64url. Secret. */
+	VAPID_PRIVATE_KEY?: string;
+	/** Contact for push services, `mailto:` or `https:` (RFC 8292). */
+	VAPID_SUBJECT?: string;
 }

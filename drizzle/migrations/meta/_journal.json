@@ -260,6 +260,13 @@
       "when": 1788850800008,
       "tag": "0033_add_jmap_change_log",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1788850800009,
+      "tag": "0036_add_push_subscriptions",
+      "breakpoints": true
     }
   ]
 }

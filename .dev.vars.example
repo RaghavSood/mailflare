@@ -6,6 +6,13 @@ CF_TOKEN=your_api_token_with_zone_email_permissions
 # GITHUB_UPDATE_REPO=owner/repo
 # GITHUB_UPDATE_REF=main
 
+# Optional: Web Push notifications for new mail. Generate a pair with
+#   node scripts/generate-vapid-keys.mjs mailto:you@example.com
+# and keep the private key secret (wrangler secret put VAPID_PRIVATE_KEY).
+# VAPID_PUBLIC_KEY=base64url_uncompressed_p256_public_key
+# VAPID_PRIVATE_KEY=base64url_32_byte_private_key
+# VAPID_SUBJECT=mailto:you@example.com
+
 # Legacy Global API Key alternative. Use this only instead of CF_TOKEN.
 # CF_EMAIL=you@example.com
 # CF_API_KEY=your_global_api_key

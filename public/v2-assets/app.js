@@ -1067,4 +1067,187 @@
 	}
 	if (document.readyState === "complete") registerServiceWorker();
 	else window.addEventListener("load", registerServiceWorker, { once: true });
+
+	/* ---------- push notifications ---------- */
+
+	// The sidebar's [data-push] button. States: on, off, blocked, install (iOS
+	// outside the installed app, where Safari has no push), unsupported (hidden).
+	const PUSH_LABELS = {
+		on: "Notifications on",
+		off: "Turn on notifications",
+		blocked: "Notifications blocked",
+		install: "Install the app first",
+		busy: "Notifications…",
+	};
+	const PUSH_TITLES = {
+		on: "New mail shows a notification on this device. Click to turn off.",
+		off: "Show a notification on this device when new mail arrives.",
+		blocked: "Notifications are blocked for this site. Allow them in the browser's site settings.",
+		install: "On iPhone and iPad, notifications work only from the installed app: Share, then Add to Home Screen.",
+		busy: "",
+	};
+	let pushState = "unsupported";
+
+	const isIos = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+	const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+	const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window && window.isSecureContext;
+
+	function base64UrlToBytes(value) {
+		const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+		const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+		return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+	}
+
+	function bytesToBase64Url(buffer) {
+		return btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	}
+
+	function applyPushState() {
+		for (const button of $$("[data-push]")) {
+			button.hidden = pushState === "unsupported";
+			button.dataset.state = pushState;
+			button.disabled = pushState === "busy";
+			button.title = PUSH_TITLES[pushState] ?? "";
+			button.setAttribute("aria-pressed", pushState === "on" ? "true" : "false");
+			const label = $("[data-push-label]", button);
+			if (label) label.textContent = PUSH_LABELS[pushState] ?? "";
+		}
+	}
+
+	function setPushState(state) {
+		pushState = state;
+		applyPushState();
+	}
+
+	/** The /v2/ registration once it has an active worker (pushManager needs one). */
+	async function activeRegistration() {
+		let registration = await navigator.serviceWorker.getRegistration("/v2/");
+		if (!registration && body.dataset.sw) registration = await navigator.serviceWorker.register(body.dataset.sw, { scope: "/v2/" });
+		if (!registration) throw new Error("No service worker");
+		if (registration.active) return registration;
+		const worker = registration.installing || registration.waiting;
+		await new Promise((resolve) => {
+			worker?.addEventListener("statechange", () => worker.state === "activated" && resolve());
+		});
+		return registration;
+	}
+
+	async function postJson(path, value) {
+		const response = await fetch(path, {
+			method: "POST",
+			credentials: "same-origin",
+			headers: { "Content-Type": "application/json", Accept: "application/json" },
+			body: JSON.stringify(value),
+		});
+		if (!response.ok) {
+			const data = await response.json().catch(() => ({}));
+			throw new Error(data.error || "Could not update notifications.");
+		}
+	}
+
+	async function currentSubscription() {
+		const registration = await navigator.serviceWorker.getRegistration("/v2/");
+		return registration ? registration.pushManager.getSubscription() : null;
+	}
+
+	/** Whether the server still pushes to this endpoint for whoever is signed in; null when it cannot say. */
+	async function serverHasSubscription(subscription) {
+		try {
+			const response = await fetch("/v2/push/check", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ endpoint: subscription.endpoint }),
+			});
+			if (!response.ok) return null;
+			return (await response.json()).subscribed === true;
+		} catch {
+			return null;
+		}
+	}
+
+	async function readPushState() {
+		const key = body.dataset.vapidKey;
+		if (!key) return "unsupported";
+		if (isIos() && !isStandalone()) return "install";
+		if (!pushSupported()) return "unsupported";
+		if (Notification.permission === "denied") return "blocked";
+		const subscription = await currentSubscription().catch(() => null);
+		if (!subscription || Notification.permission !== "granted") return "off";
+		// A subscription made under an older server key can no longer be pushed to.
+		const subscribedKey = subscription.options?.applicationServerKey;
+		if (subscribedKey && bytesToBase64Url(subscribedKey) !== key) return "off";
+		// Signing out drops the server's row but not the browser's subscription:
+		// the next person to sign in here starts with notifications off.
+		if (await serverHasSubscription(subscription) === false) {
+			await subscription.unsubscribe().catch(() => {});
+			return "off";
+		}
+		return "on";
+	}
+
+	async function subscribePush() {
+		const key = body.dataset.vapidKey;
+		setPushState("busy");
+		try {
+			const permission = await Notification.requestPermission();
+			if (permission !== "granted") {
+				setPushState(permission === "denied" ? "blocked" : "off");
+				return;
+			}
+			const registration = await activeRegistration();
+			const existing = await registration.pushManager.getSubscription();
+			const existingKey = existing?.options?.applicationServerKey;
+			if (existing && existingKey && bytesToBase64Url(existingKey) !== key) await existing.unsubscribe();
+			const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) });
+			try {
+				await postJson("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey: key });
+			} catch (error) {
+				await subscription.unsubscribe().catch(() => {});
+				throw error;
+			}
+			setPushState("on");
+			toast("Notifications are on for this device.");
+		} catch (error) {
+			setPushState(await readPushState());
+			toast(error instanceof Error && error.message ? error.message : "Could not turn on notifications.");
+		}
+	}
+
+	async function unsubscribePush() {
+		setPushState("busy");
+		try {
+			const subscription = await currentSubscription();
+			if (subscription) {
+				await postJson("/v2/push/unsubscribe", { endpoint: subscription.endpoint });
+				await subscription.unsubscribe();
+			}
+			setPushState("off");
+			toast("Notifications are off for this device.");
+		} catch (error) {
+			setPushState(await readPushState());
+			toast(error instanceof Error && error.message ? error.message : "Could not turn off notifications.");
+		}
+	}
+
+	document.addEventListener("click", (event) => {
+		const button = event.target instanceof Element ? event.target.closest("[data-push]") : null;
+		if (!button) return;
+		if (pushState === "off") subscribePush();
+		else if (pushState === "on") unsubscribePush();
+		else if (pushState === "install" || pushState === "blocked") toast(PUSH_TITLES[pushState]);
+	});
+	// #nav is re-rendered on every navigation; keep the control's state on it.
+	document.addEventListener("htmx:afterSettle", applyPushState);
+	document.addEventListener("htmx:oobAfterSwap", applyPushState);
+
+	readPushState().then(setPushState);
+
+	// A notification click in the service worker opens its message here.
+	navigator.serviceWorker?.addEventListener("message", (event) => {
+		const url = event.data?.type === "mf:open" ? event.data.url : null;
+		if (typeof url !== "string") return;
+		const target = new URL(url, location.href);
+		if (target.origin === location.origin && target.pathname.startsWith("/v2/")) navigate(`${target.pathname}${target.search}`);
+	});
 })();

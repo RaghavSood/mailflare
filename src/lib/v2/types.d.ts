@@ -71,6 +71,8 @@ export type V2Context = {
 	shortcutsEnabled: boolean;
 	/** Set by htmx; such requests may skip parts of the page the client keeps. */
 	htmx: boolean;
+	/** VAPID_PUBLIC_KEY when Web Push is configured, for the page to subscribe with. */
+	vapidPublicKey: string | null;
 };
 
 export type V2Folder = { id: string; name: string; color: string | null; mailboxId: string; unread: number };

@@ -18,6 +18,12 @@ export class RealtimeHub extends DurableObject<CloudflareEnv> {
 			return new Response(null, { status: 101, webSocket: client });
 		}
 
+		// Whether the user has the app open, so the push producer can stay quiet.
+		if (url.pathname === "/connections") {
+			const connections = this.ctx.getWebSockets().filter((socket) => socket.readyState === WebSocket.OPEN).length;
+			return Response.json({ connections });
+		}
+
 		if (url.pathname === "/notify" && request.method === "POST") {
 			const payload = (await request.json()) as NewMessageNotification;
 			const message = JSON.stringify(payload);
