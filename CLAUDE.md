@@ -21,7 +21,7 @@ npm run preview                # local OpenNext preview
 npm run cf-typegen             # regenerate cloudflare-env.d.ts from wrangler.jsonc
 ```
 
-There is no test script in `package.json`; the checks under `tests/` are `node:test` files run with `node --test tests/*.test.mjs` (pass the glob — on Node 24 a bare `tests/` is read as a module path). They must not need Workers bindings, so anything that reaches D1 or R2 belongs in a script under `scripts/` run against `npm run dev` instead.
+There is no test script in `package.json`; the checks under `tests/` are `node:test` files run with `node --test tests/*.test.mjs` (pass the glob — on Node 24 a bare `tests/` is read as a module path). They must not need Workers bindings, so anything that reaches D1 or R2 belongs in a script under `scripts/` run against `npm run dev` instead. End-to-end checks of the mobile web app live in `journeys/` as Android CLI journeys (natural-language XML run by an agent on an emulator); `journeys/README.md` covers the device and server setup.
 
 `next.config.ts` sets `typescript.ignoreBuildErrors: true` and `tsconfig.json` sets `noImplicitAny: false`, so the build will not catch type errors. Run `npx tsc --noEmit` if you want real type checking.
 

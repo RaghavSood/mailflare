@@ -1,0 +1,18 @@
+<journey name="Read a conversation and use its bottom sheets">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, with at least one conversation in the list.
+		On phones, message menus and the header details open as bottom sheets.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Verify that the conversation opens: its subject is shown as a heading, the sender's name is shown, and "Reply", "Reply all" and "Forward" buttons are shown below the message</action>
+		<action>Tap the small down-arrow next to "to me" under the sender's name</action>
+		<action>Verify that a panel slides up from the bottom of the screen showing "from:", "to:", "date:" and "subject:" details</action>
+		<action>Tap the close (X) button at the top right of that panel</action>
+		<action>Verify that the panel is gone and the conversation is still shown</action>
+		<action>Tap the three-dot button to the right of the message date</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Reply", "Reply all", "Forward" and "Mark unread from here"</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the bottom panel is closed and the same conversation is still shown, with its subject heading visible</action>
+	</actions>
+</journey>

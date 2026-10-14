@@ -1,0 +1,17 @@
+<journey name="Signing out removes offline copies of mail">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, and at least one conversation has been opened, so offline copies exist.
+		The service worker cannot see a sign-out, so the sign-out path must clear the offline caches and outbox.
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer</action>
+		<action>Tap the round account avatar at the top right of the screen</action>
+		<action>Tap "Sign out" at the bottom of the menu that opens</action>
+		<action>Verify that the Mailflare sign-in page is shown</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings, tap Chrome's address bar, type "localhost:3000/v2/inbox" and press Enter</action>
+		<action>Verify that the page shows "You're offline" with a "Try again" button, and that no message subjects or sender names from the inbox are shown</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings</action>
+	</actions>
+</journey>

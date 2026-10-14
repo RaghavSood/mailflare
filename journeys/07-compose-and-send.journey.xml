@@ -1,0 +1,20 @@
+<journey name="Compose and send a message with the on-screen keyboard">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in. The seeded contacts include "Maya Chen" (maya@acme.test).
+	</description>
+	<actions>
+		<action>Tap the round compose button with the pencil icon at the bottom right of the screen</action>
+		<action>Verify that a "New message" composer fills the screen with "From", "To" and "Subject" fields, a message area and a "Send" button, and that the on-screen keyboard is open</action>
+		<action>Type "maya" into the "To" field</action>
+		<action>Verify that a suggestion showing "Maya Chen" and "maya@acme.test" is visible above the keyboard</action>
+		<action>Tap the "Maya Chen" suggestion</action>
+		<action>Verify that the "To" field now shows a recipient chip for Maya Chen</action>
+		<action>Tap the "Subject" field and type "Journey send test"</action>
+		<action>Tap the message area below the subject and type "Sent from the compose journey."</action>
+		<action>Verify that the "Send" button is visible on the screen and not covered by the keyboard; hide the keyboard with the Back button if it is covered</action>
+		<action>Tap the "Send" button</action>
+		<action>Verify that the composer closes and a message reading "Message sent." appears near the bottom of the screen</action>
+		<action>Tap the menu button at the top left of the screen and tap "Sent" in the drawer</action>
+		<action>Verify that exactly one conversation with the subject "Journey send test" is listed in Sent</action>
+	</actions>
+</journey>

@@ -1,0 +1,16 @@
+<journey name="Turn push notifications on and off">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, Chrome has not yet been asked about notifications for localhost:3000 (site permission "Ask"), and the server has VAPID keys configured.
+		Delivery itself is covered in README.md (it needs mail sent to the server from outside the device).
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen</action>
+		<action>Tap "Turn on notifications" near the bottom of the drawer</action>
+		<action>Tap "Allow" in the Chrome dialog asking whether localhost:3000 may send notifications</action>
+		<action>Verify that a message reading "Notifications are on for this device." appears</action>
+		<action>Wait 10 seconds for that message to disappear, then verify that the drawer item now reads "Notifications on" and is highlighted</action>
+		<action>Tap "Notifications on" to turn notifications off</action>
+		<action>Verify that a message reading "Notifications are off for this device." appears</action>
+		<action>Wait 10 seconds for that message to disappear, then verify that the drawer item reads "Turn on notifications" again</action>
+	</actions>
+</journey>

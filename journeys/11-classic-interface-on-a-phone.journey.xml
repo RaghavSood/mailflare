@@ -1,0 +1,23 @@
+<journey name="Use the classic interface on a phone and switch back">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in.
+		The classic pages collapse their sidebar into a drawer below the md breakpoint and show settings as a tab strip.
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer</action>
+		<action>Verify that the classic inbox is shown with a menu button at the top left, a search field, and message rows that fit the screen width without a horizontal scrollbar</action>
+		<action>Tap the first message row</action>
+		<action>Verify that the message is shown full screen with a back button at the top left, and the message list is hidden</action>
+		<action>Tap the back button at the top left of the message</action>
+		<action>Verify that the classic message list is shown again</action>
+		<action>Tap the menu button at the top left of the screen</action>
+		<action>Verify that a drawer opens from the left showing "Compose" and the mailbox folders ("Inbox", "Sent", "Drafts", "Archived", "Spam", "Trash")</action>
+		<action>Tap outside the drawer on the darkened area to the right</action>
+		<action>Verify that the drawer is closed</action>
+		<action>Tap the round account avatar at the top right of the screen and tap "Settings" in the menu that opens</action>
+		<action>Verify that settings sections are shown as a horizontal row of tabs at the top (including "Account") and the settings content fits the screen width</action>
+		<action>Press the Android Back button once to return to the classic inbox</action>
+		<action>Tap the round button with a sparkle icon at the top right, next to the search field (its label is "Switch to the new interface")</action>
+		<action>Verify that the v2 inbox is shown with the "Search mail" field and the round compose button</action>
+	</actions>
+</journey>

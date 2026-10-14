@@ -1,0 +1,16 @@
+<journey name="Navigation drawer opens, navigates and closes with Back">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in (in Chrome or the installed app).
+		On phones the folder list is a drawer opened from the menu button at the top left.
+	</description>
+	<actions>
+		<action>Tap the menu button (three horizontal lines) at the top left of the screen</action>
+		<action>Verify that a drawer slides in from the left listing "Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Archive", "All mail", "Spam" and "Trash", with "Settings" and "Switch to classic" at the bottom</action>
+		<action>Verify that the drawer does not show "Keyboard shortcuts"</action>
+		<action>Tap "Sent" in the drawer</action>
+		<action>Verify that the drawer is closed and the list heading reads "Sent"</action>
+		<action>Tap the menu button at the top left of the screen to open the drawer again</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the drawer is closed and the list heading still reads "Sent"</action>
+	</actions>
+</journey>
