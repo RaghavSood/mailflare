@@ -141,7 +141,7 @@ The admin overview dispatches `deploy-update.yml` (constant in `src/app/api/admi
 - Types and pure helpers are split out of components and modules into sibling `*-types.d.ts` and `*-utils.ts` files (41 and 27 of them respectively). Follow this when adding anything non-trivial.
 - Server code reaches bindings through `getEnv()` / `getEnvAsync()` in `src/lib/cloudflare.ts`, then `getDb(env)` from `src/db`. Never import `getCloudflareContext` directly.
 - API routes return `NextResponse.json({ error: "..." }, { status })` for failures; there is no shared error envelope helper.
-- UI is Tailwind v4 + shadcn/Radix primitives in `src/components/ui/`. `DialogContent` sets no max height, so a tall dialog overflows the viewport with an unreachable submit button — add `max-h-[calc(100vh-4rem)] overflow-y-auto` on any dialog with more than a few fields.
+- UI is Tailwind v4 + shadcn/Radix primitives in `src/components/ui/`. `DialogContent` caps itself at `max-h-[calc(100dvh-4rem)]` and scrolls, so a tall dialog keeps its submit button reachable on a phone; hand-rolled `fixed inset-0` modals need the same two classes.
 - `cloudflare-env.d.ts` is generated (500KB) — regenerate with `cf-typegen`, never hand-edit.
 
 <!-- BEGIN:nextjs-agent-rules -->

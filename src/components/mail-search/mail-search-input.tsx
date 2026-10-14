@@ -11,13 +11,13 @@ export function MailSearchInput() {
 	const showShortcutHints = shortcutsEnabled && !shortcutsPreferenceLoading;
 
 	return (
-		<div className="flex h-12 flex-1 items-center gap-2.5 rounded-full bg-[#eaf1fb] px-4 text-neutral-600 focus-within:ring-2 focus-within:ring-blue-500/30 transition-all">
+		<div className="flex h-12 min-w-0 flex-1 items-center gap-2.5 rounded-full bg-[#eaf1fb] px-4 text-neutral-600 focus-within:ring-2 focus-within:ring-blue-500/30 transition-all">
 			<Search className="h-5 w-5 shrink-0" />
 			<Input
 				value={query}
 				onChange={(event) => setQuery(event.target.value)}
 				placeholder={showShortcutHints ? "Search mail (press / to focus)" : "Search mail"}
-				className="h-full min-w-0 flex-1 bg-transparent text-[15px] text-neutral-800 outline-none! shadow-none! border-none! placeholder:text-neutral-500"
+				className="h-full min-w-0 flex-1 bg-transparent text-[15px] max-md:text-base text-neutral-800 outline-none! shadow-none! border-none! placeholder:text-neutral-500"
 			/>
 			{query ? (
 				<button

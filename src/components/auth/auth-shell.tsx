@@ -22,9 +22,9 @@ export function AuthShell({
   }, [branding.iconUrl]);
 
   return (
-    <div className="min-h-dvh bg-[#f1f4fa] px-4 py-6 text-neutral-900 sm:px-6 lg:flex lg:items-center lg:px-10 lg:py-10">
-      <main className="mx-auto grid w-full max-w-6xl overflow-hidden rounded-4xl bg-white lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <section className="flex flex-col p-7 sm:p-10 lg:p-14">
+    <div className="min-h-dvh bg-[#f1f4fa] px-4 py-6 text-neutral-900 max-sm:bg-white max-sm:p-0 sm:px-6 lg:flex lg:items-center lg:px-10 lg:py-10">
+      <main className="mx-auto grid w-full max-w-6xl overflow-hidden rounded-4xl bg-white max-sm:rounded-none lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <section className="flex flex-col p-7 max-sm:px-5 max-sm:pt-[max(1.5rem,env(safe-area-inset-top))] max-sm:pb-2 sm:p-10 lg:p-14">
           <div className="flex items-center gap-2">
             <span className="flex items-center justify-center overflow-hidden">
               {iconFailed ? (
@@ -58,7 +58,7 @@ export function AuthShell({
           </div>
         </section>
 
-        <section className="flex min-w-0 flex-col justify-center p-7 sm:p-10 lg:p-14">
+        <section className="flex min-w-0 flex-col justify-center p-7 max-sm:px-5 max-sm:pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:p-10 lg:p-14">
           {steps && (
             <div className="mb-7 flex flex-wrap gap-2 text-xs font-semibold">
               {steps.map((step, index) => (
@@ -77,9 +77,9 @@ export function AuthShell({
               ))}
             </div>
           )}
-          <div className="w-full">{children}</div>
+          <div className="w-full max-md:[&_input:not([type=checkbox]):not([type=radio])]:h-11 max-md:[&_a]:inline-flex max-md:[&_a]:min-h-11 max-md:[&_a]:items-center">{children}</div>
           {footer && (
-            <div className="mt-8 text-sm font-medium text-blue-700">
+            <div className="mt-8 text-sm font-medium text-blue-700 max-md:mt-4 max-md:[&_a]:inline-flex max-md:[&_a]:min-h-11 max-md:[&_a]:items-center">
               {footer}
             </div>
           )}

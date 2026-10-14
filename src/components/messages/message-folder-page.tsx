@@ -129,7 +129,7 @@ function MessageListRow({
 	}
 
 	const className =
-		`group relative grid min-h-12 w-full grid-cols-[24px_32px_minmax(160px,240px)_1fr_auto] items-center gap-3 px-6 text-left text-sm hover:z-10 hover:bg-[#f2f6fc] hover:shadow-sm ${active || selected ? "bg-blue-50" : ""
+		`group relative grid min-h-12 w-full grid-cols-[24px_32px_minmax(160px,240px)_1fr_auto] items-center gap-3 px-6 text-left max-md:grid-cols-[24px_32px_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0 max-md:px-3 max-md:py-2 text-sm hover:z-10 hover:bg-[#f2f6fc] hover:shadow-sm ${active || selected ? "bg-blue-50" : ""
 		} ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`;
 	const content = (
 		<>
@@ -160,7 +160,7 @@ function MessageListRow({
 					<span className="ml-2 text-xs text-neutral-500">{message.threadCount}</span>
 				)}
 			</span>
-			<span className="truncate text-neutral-700">
+			<span className="truncate text-neutral-700 max-md:col-span-2 max-md:col-start-3 max-md:row-start-2">
 				<span className={unread ? "font-semibold text-neutral-900" : ""}>
 					{rowMessage.subject ?? "(no subject)"}
 				</span>
@@ -168,7 +168,7 @@ function MessageListRow({
 			</span>
 			<time
 				dateTime={message.createdAt}
-				className={`min-w-[96px] whitespace-nowrap text-right text-xs group-hover:opacity-0 ${unread ? "font-semibold text-neutral-800" : "text-neutral-500"
+				className={`min-w-[96px] whitespace-nowrap text-right text-xs group-hover:opacity-0 max-md:col-start-4 max-md:row-start-1 max-md:min-w-0 ${unread ? "font-semibold text-neutral-800" : "text-neutral-500"
 					}`}
 			>
 				{formatMessageListTimestamp(message.createdAt)}

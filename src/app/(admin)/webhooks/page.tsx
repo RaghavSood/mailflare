@@ -222,7 +222,7 @@ export default function WebhooksPage() {
 			)}
 
 			<Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-				<DialogContent className="max-h-[calc(100vh-4rem)] overflow-y-auto">
+				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>Add endpoint</DialogTitle>
 						<DialogDescription>

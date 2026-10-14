@@ -12,11 +12,11 @@ export function UiSwitchLink() {
 	return (
 		<a
 			href={`/v2/switch?to=v2&from=${encodeURIComponent(pathname)}`}
-			className="flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-neutral-300 px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-100"
+			className="flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-neutral-300 px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-100 max-sm:h-11 max-sm:w-11 max-sm:justify-center max-sm:px-0"
 			title="Switch to the new interface"
 		>
 			<Sparkles className="h-4 w-4" />
-			<span>New UI</span>
+			<span className="max-sm:sr-only">New UI</span>
 		</a>
 	);
 }

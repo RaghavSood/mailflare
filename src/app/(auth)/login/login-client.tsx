@@ -110,7 +110,7 @@ export function LoginClient() {
           </Button>
           <button
             type="button"
-            className="w-full text-center text-sm text-neutral-500 hover:text-neutral-800"
+            className="w-full text-center text-sm text-neutral-500 hover:text-neutral-800 max-md:min-h-11"
             onClick={() => {
               setChallengeToken(null);
               setCode("");

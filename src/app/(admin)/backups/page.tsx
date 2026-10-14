@@ -94,7 +94,7 @@ export default function BackupsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 max-sm:flex-col">
         <div>
           <h1 className="text-3xl font-medium text-neutral-900">
             Database Backups
@@ -327,12 +327,12 @@ export default function BackupsPage() {
         </CardContent>
       </Card>
 
-      <section className="overflow-hidden rounded-3xl bg-white">
+      <section className="overflow-hidden rounded-3xl bg-white max-md:overflow-x-auto">
         <div className="flex items-center gap-3 border-b border-neutral-100 px-4 py-4">
           <DatabaseBackup className="h-5 w-5 text-neutral-500" />
           <h2 className="font-semibold text-neutral-900">Backup history</h2>
         </div>
-        <div className="grid grid-cols-[1fr_110px_110px_170px_120px] gap-4 border-b border-neutral-100 bg-neutral-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        <div className="grid grid-cols-[1fr_110px_110px_170px_120px] gap-4 max-md:min-w-[640px] border-b border-neutral-100 bg-neutral-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
           <span>File</span>
           <span>Status</span>
           <span>Size</span>
@@ -346,7 +346,7 @@ export default function BackupsPage() {
         {(backups.data?.backups ?? []).map((backup: BackupItem) => (
           <div
             key={backup.id}
-            className="grid grid-cols-[1fr_110px_110px_170px_120px] items-center gap-4 border-b border-neutral-100 px-4 py-3 last:border-b-0"
+            className="grid grid-cols-[1fr_110px_110px_170px_120px] items-center gap-4 max-md:min-w-[640px] border-b border-neutral-100 px-4 py-3 last:border-b-0"
           >
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-neutral-900">
