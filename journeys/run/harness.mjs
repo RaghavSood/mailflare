@@ -700,6 +700,8 @@ export class Device {
 			await this.tap("[data-nav-toggle]");
 			const open = await waitFor(() => this.drawerOpen(), { timeout: 2_500, message: "the drawer to open" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
 			if (open) return;
+			// A busy device can open it just after the wait; a second tap would then land on the drawer.
+			if (await waitFor(() => this.drawerOpen(), { timeout: 1_500 }).catch(() => false)) return;
 			this.log("  the drawer did not open; tapping the menu button again");
 		}
 	}

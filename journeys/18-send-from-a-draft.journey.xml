@@ -1,0 +1,27 @@
+<journey name="Send a saved draft and refresh the page that follows">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, and no message with the subject "Draft send journey" exists in Drafts or Sent.
+		A draft opened from Drafts has its own address. Once it is sent the draft is gone, so the page shown afterwards must have an address that still exists: refreshing it must show that page, not "Not found".
+	</description>
+	<actions>
+		<action>Tap the round compose button with the pencil icon at the bottom right of the screen</action>
+		<action>Tap the "To" field, type "maya" and tap the "Maya Chen" suggestion</action>
+		<action>Tap the "Subject" field</action>
+		<action>Type "Draft send journey" into the "Subject" field</action>
+		<action>Verify that the composer reads "Saved" within a few seconds</action>
+		<action>Tap the "Save and close" button with the X icon at the top right of the composer</action>
+		<action>Verify that the composer closes and the inbox is shown</action>
+		<action>Tap the menu button at the top left of the screen and tap "Drafts" in the drawer</action>
+		<action>Tap the draft with the subject "Draft send journey"</action>
+		<action>Verify that the draft opens in a composer filling the screen, with "Draft send journey" in the "Subject" field and a recipient chip for maya@acme.test in the "To" field</action>
+		<action>Verify that the "Send" button is visible on the screen and not covered by the keyboard; hide the keyboard with the Back button if it is covered</action>
+		<action>Tap the "Send" button</action>
+		<action>Verify that the composer closes and a message reading "Message sent." appears near the bottom of the screen</action>
+		<action>Verify that the Drafts list is shown with the "Drafts" heading, that the page's address is the Drafts list and no longer the draft's, and that "Draft send journey" is not listed</action>
+		<action>Swipe slowly downwards starting near the top of the list, ending near the middle of the screen</action>
+		<action>Verify that a refresh indicator appears at the top of the list, or that the list has refreshed</action>
+		<action>Verify that the Drafts list is still shown with the "Drafts" heading, and that no "Not found" page, error message or browser error page is shown</action>
+		<action>Tap the menu button at the top left of the screen and tap "Sent" in the drawer</action>
+		<action>Verify that exactly one conversation with the subject "Draft send journey" is listed in Sent</action>
+	</actions>
+</journey>

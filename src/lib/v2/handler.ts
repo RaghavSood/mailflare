@@ -12,6 +12,7 @@ import { MessageActionError } from "@/lib/messages/actions";
 import { isPushSubscriptionRegistered, removePushSubscription, savePushSubscription } from "@/lib/push/delivery";
 import { getPushConfig, parsePushSubscription } from "@/lib/push/push-utils";
 import { vapidKeyId } from "@/lib/push/vapid-utils";
+import { historyHeaders } from "./handler-utils";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
@@ -164,12 +165,18 @@ function at(ctx: V2Context, path: string): V2Context {
 	return { ...ctx, url: new URL(safeReturnPath(path), ctx.url.origin) };
 }
 
-async function respondWithPage(ctx: V2Context, path: string, options: { toast?: Html | null; push?: boolean } = {}): Promise<Response> {
+/**
+ * Answers an action with the page at `path`. Actions are POSTs to /v2/act and
+ * friends, so the address only moves when asked: `push` when the view
+ * changes, `replace` when the page the request came from (`current`) no
+ * longer exists, as after sending a draft.
+ */
+async function respondWithPage(ctx: V2Context, path: string, options: { toast?: Html | null; push?: boolean; replace?: boolean; current?: string | null } = {}): Promise<Response> {
 	const target = safeReturnPath(path);
 	if (!ctx.htmx) return redirect(target);
 	const page = await renderRoute(at(ctx, target), { toast: options.toast });
-	// Actions are POSTs to /v2/act and friends; only push a URL when the view changes.
-	return htmlResponse(page.body, { status: page.status, headers: { "HX-Push-Url": options.push ? target : "false" } });
+	const mode = options.push ? "push" : options.replace ? "replace" : "none";
+	return htmlResponse(page.body, { status: page.status, headers: historyHeaders(mode, target, options.current ?? null) });
 }
 
 function toastWithUndo(message: string, undo: { kind: "restore"; entries: UndoEntry[] } | { kind: "unsnooze"; ids: string[] } | null, returnTo: string): Html {
@@ -336,7 +343,7 @@ function composeInputFrom(form: FormData, ctx: V2Context): ComposeInput | { erro
 	};
 }
 
-async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
+async function handleSend(ctx: V2Context, form: FormData, current: string | null): Promise<Response> {
 	const input = composeInputFrom(form, ctx);
 	if ("error" in input) return htmlResponse(input.error, { status: 422 });
 	if (!input.to.trim()) return htmlResponse("Add at least one recipient.", { status: 422 });
@@ -355,7 +362,8 @@ async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
 		return htmlResponse(error instanceof Error ? error.message : "Sending failed.", { status: 422 });
 	}
 	const returnTo = safeReturnPath(String(form.get("return") ?? ""));
-	return respondWithPage(ctx, returnTo, { toast: html`<span>Message sent.</span>` });
+	// The composer's page (a draft, /v2/compose) is done with: the page shown takes its address.
+	return respondWithPage(ctx, returnTo, { toast: html`<span>Message sent.</span>`, replace: true, current });
 }
 
 async function handleContacts(ctx: V2Context): Promise<Response> {
@@ -591,7 +599,7 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 			return jsonResponse({ ok: removed });
 		}
 		case "send":
-			return handleSend(ctx, form);
+			return handleSend(ctx, form, currentPagePath(request, url));
 		case "prefs": {
 			const cookies: string[] = [];
 			const theme = String(form.get("theme") ?? "");

@@ -18,6 +18,7 @@ await build({
 		contents: `
 			export { html, raw, escapeHtml } from "./src/lib/v2/html.ts";
 			export { parseV2Path, listHref, threadHref, v2ToClassic, classicToV2, safeReturnPath } from "./src/lib/v2/paths.ts";
+			export { historyHeaders } from "./src/lib/v2/handler-utils.ts";
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
 			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
@@ -86,6 +87,22 @@ test("post-action destinations stay inside /v2", () => {
 	for (const bad of ["https://evil.example/v2/", "//evil.example", "/inbox", "/v2", "/v2/\\evil", "/v2/x\r\nSet-Cookie: a=b", null, ""]) {
 		assert.equal(v2.safeReturnPath(bad), "/v2/inbox", String(bad));
 	}
+});
+
+test("a send moves the address off a composer page that no longer exists, and only then", () => {
+	// Sent from a draft opened from Drafts: the draft is gone, so the Drafts list takes its history entry.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/drafts", "/v2/drafts/msg_1"), { "HX-Replace-Url": "/v2/drafts" });
+	// /v2/compose (new, or ?draft=) answers with the Inbox.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox", "/v2/compose?draft=msg_1"), { "HX-Replace-Url": "/v2/inbox" });
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox", "/v2/compose"), { "HX-Replace-Url": "/v2/inbox" });
+	// The docked composer and an inline reply return to the page they were on: nothing to change.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox?page=2", "/v2/inbox?page=2"), { "HX-Push-Url": "false" });
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox/msg_2", "/v2/inbox/msg_2"), { "HX-Push-Url": "false" });
+	// Without HX-Current-URL the page shown still names itself.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/drafts", null), { "HX-Replace-Url": "/v2/drafts" });
+	// Other actions keep their behaviour: push when the view changes, otherwise leave the address alone.
+	assert.deepEqual(v2.historyHeaders("push", "/v2/inbox", "/v2/inbox/msg_2"), { "HX-Push-Url": "/v2/inbox" });
+	assert.deepEqual(v2.historyHeaders("none", "/v2/inbox", "/v2/inbox/msg_2"), { "HX-Push-Url": "false" });
 });
 
 test("email HTML loses active tags before it reaches the sandboxed frame", () => {
