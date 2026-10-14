@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CI: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  test:
+    name: Unit tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Restore node_modules
+        id: modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: modules-${{ runner.os }}-node24-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.modules.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        run: node --test tests/*.test.mjs
+      - name: Build the Worker
+        run: npm run build
+
+  journeys:
+    name: Android journeys (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      API_LEVEL: 36
+      # A cache download stalled for over 20 minutes once; give up after 3 (a miss recreates the AVD).
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
+      MAILFLARE_HOST_PORT: 3000
+      CDP_PORT: 9222
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Restore node_modules
+        id: modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: modules-${{ runner.os }}-node24-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.modules.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+
+      # Seed, build and start the Worker while the emulator boots.
+      - name: Start the server in the background
+        run: |
+          mkdir -p journey-results
+          nohup bash journeys/ci/server.sh > journey-results/server.log 2>&1 &
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The system image and emulator are otherwise downloaded on every run, and that download has
+      # failed with "Error on ZipFile unknown archive" often enough to fail a shard on its own.
+      - name: Restore the system image and emulator
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/local/lib/android/sdk/system-images/android-${{ env.API_LEVEL }}/google_apis_playstore/x86_64
+            /usr/local/lib/android/sdk/emulator
+          key: android-sdk-${{ env.API_LEVEL }}-playstore-x86_64-v1
+
+      - name: Restore the AVD snapshot
+        id: avd
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.API_LEVEL }}-playstore-x86_64-pixel_6-v1
+
+      - name: Create the AVD snapshot
+        if: steps.avd.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: echo "AVD snapshot created"
+
+      - name: Run journeys
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash journeys/ci/run-shard.sh ${{ matrix.shard }}/3 ${{ github.event.pull_request.draft && '--allow-unscripted' || '' }}
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          cp ~/.config/.wrangler/logs/*.log journey-results/ 2>/dev/null || true
+          if [ -s journey-results/wrangler-restarts.log ]; then
+            { echo "> [!WARNING]"; echo "> wrangler dev exited and was restarted during this run:"; sed 's/^/> /' journey-results/wrangler-restarts.log; echo; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat journey-results/summary-*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No journey summary was written; see the server log artifact." >> "$GITHUB_STEP_SUMMARY"
+          tail -5 journey-results/server.log || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: journeys-shard-${{ matrix.shard }}
+          path: journey-results/
+          if-no-files-found: warn

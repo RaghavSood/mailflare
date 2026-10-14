@@ -71,9 +71,33 @@ printf 'From: QA <qa@qa.test>\r\nTo: support@example.com\r\nSubject: Hello\r\nMe
 curl -X POST "http://localhost:3000/cdn-cgi/handler/email?from=qa@qa.test&to=support@example.com" --data-binary @/tmp/m.eml
 ```
 
-## Running journeys
+## Running the scripted journeys
 
-Ask an agent that has the Android CLI skills to "run `journeys/05-swipe-to-trash-undo-and-archive.journey.xml` on emulator-5554". It follows the journey reference (each action exactly as written, Verify actions inspect without interacting) and writes a Markdown result with ✅/❌ per action.
+Each journey has a deterministic script, `journeys/run/<same id>.mjs`, that performs every `<action>` in order as one step labelled with the action's text. The runner refuses a script whose steps drift from the XML, so the XML stays the source of truth: change a journey, then change its script. CI runs the scripts on every pull request and on `main` (`.github/workflows/ci.yml`).
+
+With the server and a device set up as above:
+
+```sh
+export ANDROID_SERIAL=emulator-5554      # which device, when more than one is attached
+export MAILFLARE_HOST_PORT=3000          # the host port the server listens on (the runner relays the device's localhost:3000 to it)
+export CDP_PORT=9222                     # host port for Chrome DevTools
+node journeys/run/index.mjs              # all journeys; or name some: node journeys/run/index.mjs 05 08
+node journeys/run/index.mjs --shard 2/3  # one CI shard
+```
+
+It writes `journey-results/summary.md` (✅/❌ per action, in the shape of the table below), `journey-results/junit.xml`, and a screenshot of the screen for each failure, and exits non-zero if any journey fails. A journey without a script fails the run too, unless `--allow-unscripted` is given (CI passes it only on draft pull requests). Journeys whose failure is an open issue name it (`knownIssue` in the script); the label is shown next to the failure and never turns it into a pass.
+
+How the scripts work:
+
+- **Input is real device input.** Taps and swipes are `adb shell input`, Back is the Back key, typing goes through the on-screen keyboard with `input text`. Chrome DevTools (the forwarded `chrome_devtools_remote` socket) is only used to wait, assert, and find where an element is on screen; a first tap, swallowed in the page before the app sees it, maps page pixels to screen pixels. Taps wait for the element to be on screen, enabled, uncovered and still, check where the touch landed, and are retried once when the expected effect (focus, drawer, navigation) does not follow. Typing is checked and redone once if `input text` dropped a character.
+- **Each journey sets up its own start state** from its `<description>` (signed in through the API, enough mail delivered, the service worker controlling the page), so shards and single journeys run independently. The runner clears Chrome's data on the device first (`pm clear`), so it starts with one tab and notifications at "Ask"; pass `--keep-chrome-data` to skip that on a device you also use by hand.
+- **Offline** is Airplane mode plus cutting the server off. The runner reverses the device's `localhost:3000` to a small relay of its own in front of `MAILFLARE_HOST_PORT`; going offline closes every connection through it and refuses new ones, because removing the `adb reverse` tunnel leaves Chrome's kept-alive connections working. The step then checks from the page that the server cannot be reached. Quick Settings is opened with `cmd statusbar expand-settings` (two swipes from the status bar are not reliably produced by `input swipe`) and closed with `cmd statusbar collapse` (Back first collapses the panel to the shade, and a second Back can reach the page). Airplane mode itself is set with `cmd connectivity airplane-mode`, the setting the tile toggles, because the tile's place differs between images.
+- **Waits end early.** "Wait 10 seconds" and similar steps wait up to that long for what the next Verify checks, then move on.
+- **Chrome's "Save password?" message** after journey 01 is swiped away in that journey's teardown, so it cannot cover the next journey's toolbar.
+
+## Running journeys with an agent
+
+For writing or debugging a journey, ask an agent that has the Android CLI skills to "run `journeys/05-swipe-to-trash-undo-and-archive.journey.xml` on emulator-5554". It follows the journey reference (each action exactly as written, Verify actions inspect without interacting) and writes a Markdown result with ✅/❌ per action.
 
 Things that tripped the first run:
 
@@ -87,21 +111,21 @@ Push delivery is not a journey, because it needs mail sent from outside the devi
 
 ## Last run
 
-2026-10-14, `main` at f251789, Android 16 emulator, Chrome 133:
+2026-10-14, scripted (`node journeys/run/index.mjs`), branch `ci/journeys` on `main` at 1cce18b, Android 16 emulator, Chrome 133; three full runs in a row locally, and in CI on every pull request:
 
 | Journey | Result |
 |---|---|
 | 01 | ✅ |
 | 02 | ✅ |
-| 03 | ❌ Back with the drawer open navigates away (pre-existing; same before #12–#18) |
-| 04 | ❌ Back with a bottom sheet open leaves the conversation (#19) |
+| 03 | ⚠️ "Verify that the drawer is closed…" fails as expected: Back with the drawer open leaves the list (#19) |
+| 04 | ⚠️ "Verify that the bottom panel is closed…" fails as expected: Back with a bottom sheet open leaves the conversation (#19) |
 | 05 | ✅ |
 | 06 | ✅ |
 | 07 | ✅ |
-| 08 | ❌ A cached conversation is never refreshed after reconnecting (#20) |
+| 08 | ⚠️ "Verify that the Offline banner is no longer shown" fails as expected: a cached conversation is never refreshed after reconnecting (#20) |
 | 09 | ✅ |
 | 10 | ✅ |
 | 11 | ✅ |
 | 12 | ✅ |
 
-Push delivery (by hand): ✅ delivered with the app closed, ✅ suppressed with it open, ✅ notification opens the conversation.
+Push delivery (by hand, 2026-10-14 at f251789): ✅ delivered with the app closed, ✅ suppressed with it open, ✅ notification opens the conversation.

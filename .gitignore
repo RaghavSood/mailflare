@@ -57,3 +57,6 @@ next-env.d.ts
 yarn.lock
 wrangler.prod.jsonc
 mailflare-landing
+
+# journeys/run output
+/journey-results
