@@ -72,7 +72,7 @@ export function renderComposer(
 			</div>
 			<div class="cmp-field">
 				<label for="${`to-${input.key}`}">To</label>
-				<input id="${`to-${input.key}`}" name="to" value="${draft.to}" data-recipients list="v2-contacts" autocomplete="off" required>
+				<input id="${`to-${input.key}`}" name="to" value="${draft.to}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next" required>
 				<span class="cmp-toggles">
 					<button type="button" class="link-button" data-cmp-show="cc" ${showCc ? "hidden" : ""}>Cc</button>
 					<button type="button" class="link-button" data-cmp-show="bcc" ${showBcc ? "hidden" : ""}>Bcc</button>
@@ -80,11 +80,11 @@ export function renderComposer(
 			</div>
 			<div class="cmp-field" data-cmp-row="cc" ${showCc ? "" : "hidden"}>
 				<label for="${`cc-${input.key}`}">Cc</label>
-				<input id="${`cc-${input.key}`}" name="cc" value="${draft.cc}" data-recipients list="v2-contacts" autocomplete="off">
+				<input id="${`cc-${input.key}`}" name="cc" value="${draft.cc}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next">
 			</div>
 			<div class="cmp-field" data-cmp-row="bcc" ${showBcc ? "" : "hidden"}>
 				<label for="${`bcc-${input.key}`}">Bcc</label>
-				<input id="${`bcc-${input.key}`}" name="bcc" value="${draft.bcc}" data-recipients list="v2-contacts" autocomplete="off">
+				<input id="${`bcc-${input.key}`}" name="bcc" value="${draft.bcc}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next">
 			</div>
 			<div class="cmp-field">
 				<input name="subject" value="${draft.subject}" placeholder="Subject" aria-label="Subject" data-cmp-subject>

@@ -26,6 +26,8 @@ await build({
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
 			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
+			export { renderComposer } from "./src/lib/v2/render/compose.ts";
+			export { renderDetails } from "./src/lib/v2/render/thread.ts";
 			export { resolvePushControlState } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
@@ -408,4 +410,48 @@ test("a send that names a vanished draft is refused instead of sent again", () =
 	assert.equal(v2.draftForSend("msg_1", draft), draft);
 	assert.throws(() => v2.draftForSend("msg_1", null), v2.DraftGoneError);
 	assert.throws(() => v2.draftForSend("msg_1", undefined), /already sent or its draft was discarded/);
+});
+
+test("touch markup: the keyboard resizes the page, the rail names its items, recipients get an email keyboard, details can close", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 2, spam: 0, drafts: 0, folders: new Map() }, folders: [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }], active: { view: "inbox", folderId: null } };
+	const page = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.match(page, /<meta name="viewport" content="[^"]*interactive-widget=resizes-content[^"]*">/);
+	// The tablet rail hides labels, so every item carries its name as a title.
+	assert.match(page, /href="\/v2\/inbox" title="Inbox"/);
+	assert.match(page, /title="Receipts"/);
+	for (const label of ["Settings", "Keyboard shortcuts", "Switch to classic"]) assert.ok(page.includes(`title="${label}"`), label);
+
+	const composer = String(v2.renderComposer(
+		{ id: null, mailboxId: "mbx_1", from: "me@example.com", to: "a@example.com", cc: "", bcc: "", subject: "", bodyHtml: "", quoteHtml: "", inReplyTo: null, references: null, threadId: null, attachments: [] },
+		{ mailboxes: [{ id: "mbx_1", address: "me@example.com", name: "Me", canSend: true, senderAddresses: [], catchAllHostnames: [] }], mode: "page", key: "t", returnHref: "/v2/inbox" },
+	));
+	const recipients = composer.match(/<input[^>]*data-recipients[^>]*>/g) ?? [];
+	assert.equal(recipients.length, 3);
+	for (const input of recipients) {
+		assert.match(input, /inputmode="email"/);
+		assert.match(input, /autocapitalize="off"/);
+		assert.match(input, /enterkeyhint="next"/);
+	}
+
+	const details = String(v2.renderDetails(
+		{ id: "msg_1", direction: "inbound", fromAddr: "a@example.com", toAddr: "me@example.com", ccAddr: null, bccAddr: null, subject: "Hi", deliveredTo: null, createdAt: new Date("2026-10-14T08:00:00Z") },
+		null,
+		false,
+		"UTC",
+	));
+	// The close button reuses the details toggle, so it needs no script of its own.
+	assert.match(details, /<button type="button" class="icon-button sheet-close" data-details="msg_1" aria-label="Close details">/);
 });

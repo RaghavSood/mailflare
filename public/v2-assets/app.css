@@ -771,9 +771,220 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 	.menu-panel { position: fixed; left: 8px !important; right: 8px; top: auto; bottom: 8px; max-height: 70dvh; border-radius: 14px; }
 }
 
+/* ---------- touch: sheets, gestures, recipients ---------- */
+
+.sheet-close, .split-list { display: none; }
+.list { position: relative; }
+
+/* A row being swiped follows the finger; its shadow paints the gap it leaves. */
+.row.is-swiping { z-index: 2; box-shadow: calc(var(--swipe-x, 0px) * -1) 0 0 0 var(--swipe-color, var(--surface-3)); }
+.row.is-settling { transition: transform .18s ease, box-shadow .18s ease; }
+.row[data-swipe-action="archive"] { --swipe-color: #137333; }
+.row[data-swipe-action="inbox"] { --swipe-color: #0b57d0; }
+.row[data-swipe-action="trash"] { --swipe-color: #c5221f; }
+.row.is-swiping::after {
+	content: attr(data-swipe-label);
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	display: flex;
+	align-items: center;
+	padding: 0 20px;
+	color: #fff;
+	font-weight: 600;
+	white-space: nowrap;
+	opacity: .65;
+}
+.row.is-swiping.is-armed::after { opacity: 1; }
+.row[data-swipe-dir="right"]::after { right: 100%; }
+.row[data-swipe-dir="left"]::after { left: 100%; }
+
+.ptr {
+	position: absolute;
+	left: 50%;
+	top: 0;
+	z-index: 3;
+	display: grid;
+	place-items: center;
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	background: var(--surface);
+	color: var(--muted);
+	box-shadow: var(--shadow);
+	transform: translate(-50%, calc(var(--ptr, 0px) - 44px));
+	pointer-events: none;
+}
+.ptr .icon { width: 20px; height: 20px; }
+.ptr.is-armed { color: var(--accent); }
+.ptr.is-refreshing .icon { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+.list.is-pulling .rows, .list.is-pulling .empty { transform: translateY(var(--ptr, 0px)); }
+
+/* Recipient chips replace the comma list on touch screens (app.js). */
+.cmp-field:has(.rcpt-chips) { position: relative; flex-wrap: wrap; gap: 4px 8px; padding: 4px 0; }
+.rcpt-chips { display: contents; }
+.rcpt-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	max-width: 100%;
+	height: 32px;
+	padding: 0 0 0 12px;
+	border-radius: 16px;
+	background: var(--surface-3);
+	font-size: 14px;
+}
+.rcpt-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcpt-remove { position: relative; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: var(--muted); }
+.rcpt-remove::after { content: ""; position: absolute; inset: -6px; }
+.rcpt-remove .icon { width: 16px; height: 16px; }
+.cmp-field:has(.rcpt-chips) input { flex: 1 1 120px; }
+.cmp-field:has(.rcpt-chips) .cmp-toggles { margin-left: auto; }
+.rcpt-suggest {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 100%;
+	z-index: 5;
+	margin: 0;
+	padding: 4px 0;
+	list-style: none;
+	max-height: 40dvh;
+	overflow-y: auto;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-lg);
+}
+.rcpt-option { display: flex; flex-direction: column; justify-content: center; width: 100%; min-height: 48px; padding: 4px 16px; text-align: left; }
+.rcpt-option:hover, .rcpt-option:focus-visible { background: var(--surface-2); outline: none; }
+.rcpt-option small { color: var(--muted); font-size: 12px; }
+
+@media (max-width: 899px) {
+	/* iOS zooms the page when a field under 16px takes focus. */
+	.search input, .cmp-field input, .cmp-field select, .cmp-editor, .menu-custom input, .mailbox-switch select { font-size: 16px; }
+	.list { overflow-x: hidden; }
+	.toolbar { overflow-x: auto; scrollbar-width: none; }
+	.toolbar::-webkit-scrollbar { display: none; }
+
+	/* Menus and message details open as bottom sheets over a scrim. */
+	.menu-panel {
+		left: 0 !important;
+		right: 0;
+		bottom: 0;
+		max-height: 75dvh;
+		border-width: 1px 0 0;
+		border-radius: 16px 16px 0 0;
+		padding: 0 0 calc(8px + env(safe-area-inset-bottom));
+	}
+	.menu-panel::before, .msg-details:not([hidden])::before {
+		content: "";
+		display: block;
+		width: 36px;
+		height: 4px;
+		margin: 8px auto;
+		border-radius: 2px;
+		background: var(--border-strong);
+	}
+	.menu-item { min-height: 48px; }
+	body:has(#main details.menu[open]) .scrim,
+	body:has(#main .msg-details:not([hidden])) .scrim { display: block; position: fixed; inset: 0; z-index: 39; background: rgb(0 0 0 / .4); }
+	.msg-details:not([hidden]) {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 41;
+		margin: 0;
+		max-height: 75dvh;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding: 0 16px calc(16px + env(safe-area-inset-bottom));
+		border: 0;
+		border-top: 1px solid var(--border);
+		border-radius: 16px 16px 0 0;
+		background: var(--surface);
+		box-shadow: var(--shadow-lg);
+		font-size: 13px;
+	}
+	.msg-details .sheet-close { display: inline-grid; float: right; position: sticky; top: 0; margin: -16px -8px 0 8px; }
+	.msg-details dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
+	.msg-details dt { text-align: left; margin-top: 8px; }
+
+	/* Long names and addresses wrap instead of disappearing. */
+	.msg-from { flex-wrap: wrap; row-gap: 0; }
+	.msg.is-expanded .msg-name, .msg.is-expanded .msg-address { white-space: normal; overflow-wrap: anywhere; }
+
+	/* Keep the composer's Send bar above the on-screen keyboard (--kb is set by app.js). */
+	.composer-dock, .composer-dock.is-minimized { height: calc(100dvh - var(--kb, 0px)); }
+	.app { height: calc(100dvh - var(--kb, 0px)); }
+}
+
+@media (max-width: 1199px) {
+	.attachments { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+	.attachment { width: auto; min-width: 0; }
+}
+
+/* Touch screens: every control is at least 44px, rows swipe, lists pull to refresh. */
+@media (pointer: coarse) {
+	.icon-button, .toolbar .icon-button, .toolbar .tb-select, .row-star, .row-select { width: 44px; height: 44px; }
+	.cmp-head .icon-button, .cmp-foot .icon-button, .row-hover .icon-button { width: 44px; height: 44px; }
+	.button, .reply-chip { height: 44px; }
+	.menu-item, .nav-item { min-height: 44px; }
+	.row { touch-action: pan-y; }
+	/* Small visible controls keep their look but get a 44px hit area. */
+	.details-toggle, .quote-fold > summary, .file-chip .icon-button { position: relative; }
+	.details-toggle::after, .quote-fold > summary::after, .file-chip .icon-button::after { content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%); }
+}
+@media (pointer: coarse) and (max-width: 899px) {
+	.row { grid-template-columns: 56px minmax(0, 1fr) 44px; }
+	.row-select { width: 48px; height: 48px; }
+}
+
+/* No keyboard to speak of: hide shortcut hints and the shortcut sheet. */
+@media (hover: none) and (pointer: coarse) {
+	kbd, .search-hint, [data-help] { display: none !important; }
+}
+
+/* Tablet: an icon rail, and a conversation opens beside its list. */
 @media (min-width: 900px) and (max-width: 1199px) {
-	:root { --sidebar: 220px; }
+	:root { --sidebar: 72px; }
 	.row-link { grid-template-columns: minmax(100px, 160px) minmax(0, 1fr) auto; }
+
+	.brand { width: calc(var(--sidebar) - 24px); padding-left: 7px; }
+	.brand-name { display: none; }
+	.sidebar { padding: 4px 8px 12px; align-items: center; }
+	.sidebar-top { padding: 4px 0 12px; align-items: center; }
+	.compose-button { width: 56px; padding: 0; justify-content: center; }
+	.compose-button span, .nav-label, .nav-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+	.mailbox-switch, .mailbox-name { display: none; }
+	.nav-list, .sidebar-foot { align-items: center; }
+	.nav-item { position: relative; width: 48px; height: 44px; padding: 0; gap: 0; justify-content: center; border-radius: 22px; }
+	.nav-item kbd, .nav-count.is-total { display: none; }
+	.nav-count { position: absolute; top: 2px; right: 0; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--accent-text); font-size: 10px; line-height: 18px; text-align: center; }
+	.nav-heading + .nav-list { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+
+	.main:has(> .split-list) { flex-direction: row; }
+	.main:has(> .split-list) > .page { flex: 1; min-width: 0; }
+	.split-list { display: block; flex: none; width: clamp(300px, 36vw, 380px); overflow-y: auto; overscroll-behavior: contain; border-right: 1px solid var(--border); }
+	.split-list .row { grid-template-columns: minmax(0, 1fr); align-items: start; min-height: 68px; padding: 10px 12px 10px 16px; }
+	.split-list .row-link { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from meta" "main main"; gap: 2px 8px; align-items: baseline; padding: 0; }
+	.split-list .row-from { grid-area: from; }
+	.split-list .row-meta { grid-area: meta; }
+	.split-list .row-main { grid-area: main; white-space: normal; }
+	.split-list .row-subject, .split-list .row-snippet { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.split-list .row-dash { display: none; }
+	.split-list .row.is-current { background: var(--accent-softer); }
+	.split-list .row.is-current::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+	.split-list .row:hover .row-meta time, .split-list .row:hover .row-clip { display: inline; }
+	/* Beside the list the conversation is narrow: stack the date under the sender. */
+	.main:has(> .split-list) .msg-head { grid-template-columns: 40px minmax(0, 1fr); }
+	.main:has(> .split-list) .msg-when { grid-column: 2; flex-wrap: wrap; }
+	.main:has(> .split-list) .msg-relative { display: none; }
+	.main:has(> .split-list) .msg-body, .main:has(> .split-list) .reply-slot { padding-left: 24px; }
+	.main:has(> .split-list) .thread-head { padding-left: 24px; }
+	.main:has(> .split-list) .toolbar .menu-panel { left: auto; right: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

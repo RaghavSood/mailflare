@@ -219,6 +219,7 @@ export function renderDetails(message: V2ThreadMessage, details: MessageHeaderDe
 	if (details?.listId) rows.push(["list", details.listId]);
 	if (details?.messageId) rows.push(["message-id", html`<code>${details.messageId}</code>`]);
 	return html`<div class="msg-details" id="${`details-${message.id}`}">
+		<button type="button" class="icon-button sheet-close" data-details="${message.id}" aria-label="Close details">${icon("x")}</button>
 		<dl>${rows.map(([label, value]) => html`<dt>${label}:</dt><dd>${value}</dd>`)}</dl>
 		${hasOriginal ? html`<div class="details-links">
 			<details class="all-headers"><summary>All headers (${details?.headers.length ?? 0})</summary><pre>${(details?.headers ?? []).map((header) => `${header.name}: ${header.value}`).join("\n")}</pre></details>

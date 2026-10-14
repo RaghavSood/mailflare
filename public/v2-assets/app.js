@@ -492,6 +492,450 @@
 	}
 	window.addEventListener("resize", () => $$("iframe.mail-frame").forEach(sizeFrame));
 
+	/* ---------- touch: sheets, swipe, pull to refresh, recipients, split pane ---------- */
+
+	/* pure:start (DOM-free; tests/v2-touch.test.mjs runs this block on its own) */
+
+	/** The action a horizontal swipe commits to, or null to snap the row back. */
+	function swipeOutcome(dx, width, actions) {
+		const action = dx > 0 ? actions.right : actions.left;
+		if (!action || !width) return null;
+		return Math.abs(dx) >= width * 0.35 ? action : null;
+	}
+
+	/** Split typed recipients into finished entries and the part still being typed. */
+	function splitRecipients(text) {
+		const done = [];
+		let current = "";
+		let quoted = false;
+		let angle = false;
+		for (const char of text) {
+			if (char === "\"") quoted = !quoted;
+			else if (char === "<" && !quoted) angle = true;
+			else if (char === ">" && !quoted) angle = false;
+			if ((char === "," || char === ";") && !quoted && !angle) {
+				if (current.trim()) done.push(current.trim());
+				current = "";
+				continue;
+			}
+			current += char;
+		}
+		return { done, rest: current.replace(/^\s+/, "") };
+	}
+
+	/** A finished address: a bare email, or a display name with an address in angle brackets. */
+	function isCompleteAddress(text) {
+		const value = text.trim();
+		return /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/.test(value) || /<[^\s@<>]+@[^\s@<>]+>$/.test(value);
+	}
+
+	/** The name and address to show for one recipient entry. */
+	function parseRecipient(text) {
+		const match = text.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+		if (match) return { name: match[1].trim(), email: match[2].trim() };
+		return { name: "", email: text.trim() };
+	}
+
+	/* pure:end */
+
+	const coarsePointer = window.matchMedia("(pointer: coarse)");
+	const narrowScreen = window.matchMedia("(max-width: 899px)");
+	const tabletBand = window.matchMedia("(min-width: 900px) and (max-width: 1199px)");
+
+	function onTouchPage() {
+		setupPullToRefresh();
+		setupSplitList();
+		setupRecipientChips(document);
+	}
+	document.addEventListener("DOMContentLoaded", onTouchPage);
+	if (document.readyState !== "loading") queueMicrotask(onTouchPage);
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id === "main") onTouchPage();
+	});
+	document.addEventListener("htmx:load", (event) => setupRecipientChips(event.detail.elt));
+	tabletBand.addEventListener("change", () => setupSplitList());
+
+	// The scrim under a details sheet closes it; menus already close on any outside click.
+	document.addEventListener("click", (event) => {
+		if (!narrowScreen.matches || !(event.target instanceof Element) || !event.target.closest(".scrim")) return;
+		$$("#main .msg-details:not([hidden])").forEach((panel) => (panel.hidden = true));
+	});
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || !narrowScreen.matches) return;
+		const open = $$("#main .msg-details:not([hidden])");
+		if (!open.length) return;
+		open.forEach((panel) => (panel.hidden = true));
+		event.stopImmediatePropagation();
+	}, true);
+
+	/* Swipe a list row right to archive (or move back to the Inbox) and left to delete,
+	   using the same actions as the row's hover buttons, so each view keeps its rules. */
+
+	const SWIPE_LABELS = { archive: "Archive", inbox: "Move to Inbox", trash: "Delete" };
+	let swipe = null;
+	let swallowClickUntil = 0;
+
+	function rowSwipeActions(row) {
+		const actions = $$(".row-hover [data-row-action]", row).map((button) => button.dataset.rowAction);
+		return {
+			right: actions.find((action) => action === "archive" || action === "inbox") ?? null,
+			left: actions.includes("trash") ? "trash" : null,
+		};
+	}
+
+	function paintSwipe(row, dx, action) {
+		row.classList.add("is-swiping");
+		row.style.transform = `translateX(${dx}px)`;
+		row.style.setProperty("--swipe-x", `${dx}px`);
+		row.dataset.swipeDir = dx > 0 ? "right" : "left";
+		row.dataset.swipeAction = action ?? "";
+		row.dataset.swipeLabel = SWIPE_LABELS[action] ?? "";
+	}
+
+	function clearSwipe(row) {
+		row.classList.remove("is-swiping", "is-armed", "is-settling");
+		row.style.removeProperty("transform");
+		row.style.removeProperty("--swipe-x");
+		delete row.dataset.swipeDir;
+		delete row.dataset.swipeAction;
+		delete row.dataset.swipeLabel;
+	}
+
+	document.addEventListener("touchstart", (event) => {
+		swipe = null;
+		if (event.touches.length !== 1 || pageKind() !== "list" || !(event.target instanceof Element)) return;
+		const row = event.target.closest("#main .page [data-row]");
+		if (!row || event.target.closest(".row-hover")) return;
+		const actions = rowSwipeActions(row);
+		if (!actions.left && !actions.right) return;
+		const touch = event.touches[0];
+		swipe = { row, actions, x: touch.clientX, y: touch.clientY, dx: 0, axis: null, width: row.offsetWidth };
+	}, { passive: true });
+
+	document.addEventListener("touchmove", (event) => {
+		if (!swipe || event.touches.length !== 1) return;
+		const touch = event.touches[0];
+		const dx = touch.clientX - swipe.x;
+		const dy = touch.clientY - swipe.y;
+		if (!swipe.axis) {
+			if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+			swipe.axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? "x" : "y";
+		}
+		if (swipe.axis !== "x") return;
+		const action = dx > 0 ? swipe.actions.right : swipe.actions.left;
+		// A direction with nothing to do only gives a little, then stops.
+		swipe.dx = action ? dx : Math.max(-24, Math.min(24, dx / 4));
+		paintSwipe(swipe.row, swipe.dx, action);
+		swipe.row.classList.toggle("is-armed", swipeOutcome(swipe.dx, swipe.width, swipe.actions) !== null);
+	}, { passive: true });
+
+	function endSwipe() {
+		const current = swipe;
+		swipe = null;
+		if (!current || current.axis !== "x") return;
+		const { row, dx, width } = current;
+		swallowClickUntil = Date.now() + 400;
+		const action = swipeOutcome(dx, width, current.actions);
+		row.classList.add("is-settling");
+		if (action) {
+			paintSwipe(row, dx > 0 ? width : -width, action);
+			setTimeout(() => {
+				actOnList({ action }, [row.dataset.id]);
+				// Views where the conversation stays (All mail, Starred) get the row back.
+				if (row.isConnected) clearSwipe(row);
+			}, 180);
+		} else {
+			paintSwipe(row, 0, null);
+			setTimeout(() => clearSwipe(row), 200);
+		}
+	}
+	document.addEventListener("touchend", endSwipe, { passive: true });
+	document.addEventListener("touchcancel", endSwipe, { passive: true });
+
+	// A swipe must not also open the conversation.
+	document.addEventListener("click", (event) => {
+		if (Date.now() > swallowClickUntil || !(event.target instanceof Element) || !event.target.closest("[data-row]")) return;
+		event.preventDefault();
+		event.stopPropagation();
+	}, true);
+
+	/* Pull a list down from the top to reload it. The list scrolls inside a fixed shell,
+	   so the browser's own pull-to-refresh never fires. */
+
+	const PULL_TRIGGER = 64;
+
+	function setupPullToRefresh() {
+		const list = $("#main .page[data-page=list] .list");
+		if (!list || list.dataset.ptr || !coarsePointer.matches) return;
+		list.dataset.ptr = "1";
+		let start = null;
+		let pull = 0;
+		let indicator = null;
+		const setPull = (value) => {
+			pull = value;
+			if (!indicator) {
+				indicator = document.createElement("div");
+				indicator.className = "ptr";
+				indicator.setAttribute("aria-hidden", "true");
+				const glyph = $("#main .toolbar a[aria-label=Refresh] svg");
+				if (glyph) indicator.append(glyph.cloneNode(true));
+				list.prepend(indicator);
+			}
+			list.classList.toggle("is-pulling", value > 0);
+			list.style.setProperty("--ptr", `${value}px`);
+			indicator.classList.toggle("is-armed", value >= PULL_TRIGGER);
+		};
+		list.addEventListener("touchstart", (event) => {
+			start = list.scrollTop <= 0 && event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+		}, { passive: true });
+		list.addEventListener("touchmove", (event) => {
+			if (!start) return;
+			// A row swipe won this gesture: let go of the pull entirely.
+			if (swipe?.axis === "x") {
+				if (pull) setPull(0);
+				start = null;
+				return;
+			}
+			const dy = event.touches[0].clientY - start.y;
+			const dx = event.touches[0].clientX - start.x;
+			if (pull === 0) {
+				if (dy < 0 || list.scrollTop > 0) start = null;
+				// Same axis rule as the swipe, so a diagonal drag is one gesture or the other.
+				if (!start || dy < 10 || dy <= Math.abs(dx) * 1.3) return;
+			}
+			event.preventDefault();
+			setPull(Math.max(0, Math.min(96, (dy - 10) * 0.5)));
+		}, { passive: false });
+		const release = () => {
+			if (!start) return;
+			start = null;
+			if (pull < PULL_TRIGGER) return setPull(0);
+			indicator.classList.add("is-refreshing");
+			setPull(PULL_TRIGGER);
+			// The reload swaps the list out; if it fails, put the list back.
+			Promise.resolve(refresh()).finally(() => {
+				if (!list.isConnected) return;
+				indicator.classList.remove("is-refreshing");
+				setPull(0);
+			});
+		};
+		list.addEventListener("touchend", release, { passive: true });
+		list.addEventListener("touchcancel", release, { passive: true });
+	}
+
+	/* On the tablet band a conversation opens beside its list. The thread page does not
+	   carry the list, so fetch it (cached per list URL) into a pane beside the page. */
+
+	const splitLists = new Map();
+
+	function markCurrentRow(pane, scroll) {
+		let current = null;
+		for (const row of $$("[data-row]", pane)) {
+			const here = new URL(row.dataset.href, location.href).pathname === location.pathname;
+			row.classList.toggle("is-current", here);
+			if (here) current = row;
+		}
+		if (scroll && current && (current.offsetTop < pane.scrollTop || current.offsetTop + current.offsetHeight > pane.scrollTop + pane.clientHeight)) {
+			pane.scrollTop = current.offsetTop - pane.clientHeight / 3;
+		}
+	}
+
+	async function setupSplitList() {
+		const main = $("#main");
+		const current = page();
+		if (!main || current?.dataset.page !== "thread" || !tabletBand.matches) return;
+		const href = current.dataset.list;
+		if (!href || $(":scope > .split-list", main)) return;
+		const pane = document.createElement("aside");
+		pane.className = "split-list";
+		pane.setAttribute("aria-label", "Conversations");
+		main.prepend(pane);
+		let shown = false;
+		const show = (markup) => {
+			pane.innerHTML = markup;
+			window.htmx.process(pane);
+			markCurrentRow(pane, !shown);
+			shown = true;
+		};
+		if (splitLists.has(href)) show(splitLists.get(href));
+		try {
+			const response = await fetch(href, { headers: { Accept: "text/html" } });
+			if (!response.ok) return;
+			const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+			const list = doc.querySelector("#main .rows");
+			if (!list) return;
+			// The pane only opens conversations; selection, stars and row actions stay on the list page.
+			list.querySelectorAll(".row-select, .row-star, .row-hover").forEach((element) => element.remove());
+			splitLists.set(href, list.outerHTML);
+			if (pane.isConnected) show(list.outerHTML);
+		} catch {
+			/* The pane is a convenience; the thread works without it. */
+		}
+	}
+
+	/* Recipient chips on touch screens: finished addresses become chips, and contact
+	   suggestions open as a tappable list under the field instead of a datalist that
+	   on-screen keyboards hide. A hidden input keeps the field's name, so drafts,
+	   sending and validation read the same comma-separated value as before. */
+
+	let contactObserver = null;
+
+	function setupRecipientChips(root) {
+		if (!coarsePointer.matches || !(root instanceof Element || root instanceof Document)) return;
+		$$("[data-composer] input[data-recipients]", root).forEach(enhanceRecipients);
+		const datalist = $("#v2-contacts");
+		if (datalist && !contactObserver) {
+			// suggestContacts fills the shared datalist; mirror it for the focused field.
+			contactObserver = new MutationObserver(() => document.activeElement?.recipientSuggest?.(datalist));
+			contactObserver.observe(datalist, { childList: true });
+		}
+	}
+
+	function enhanceRecipients(input) {
+		if (input.dataset.chips || !input.name) return;
+		input.dataset.chips = "1";
+		const field = input.closest(".cmp-field");
+		const form = input.form;
+		const hidden = document.createElement("input");
+		hidden.type = "hidden";
+		hidden.name = input.name;
+		input.removeAttribute("name");
+		input.removeAttribute("list");
+		input.required = false;
+		const chips = document.createElement("span");
+		chips.className = "rcpt-chips";
+		const suggest = document.createElement("ul");
+		suggest.className = "rcpt-suggest";
+		suggest.setAttribute("role", "listbox");
+		suggest.hidden = true;
+		input.before(chips);
+		input.after(hidden);
+		field?.append(suggest);
+		const removeGlyph = $("[data-cmp-close] svg", form);
+		const addresses = splitRecipients(`${input.value},`).done;
+		input.value = "";
+
+		const sync = () => {
+			hidden.value = [...addresses, input.value.trim()].filter(Boolean).join(", ");
+		};
+		const render = () => {
+			chips.replaceChildren(...addresses.map((address, index) => {
+				const { name, email } = parseRecipient(address);
+				const chip = document.createElement("span");
+				chip.className = "rcpt-chip";
+				chip.title = email;
+				const label = document.createElement("span");
+				label.textContent = name || email;
+				const remove = document.createElement("button");
+				remove.type = "button";
+				remove.className = "rcpt-remove";
+				remove.setAttribute("aria-label", `Remove ${name || email}`);
+				if (removeGlyph) remove.append(removeGlyph.cloneNode(true));
+				else remove.textContent = "×";
+				remove.addEventListener("click", () => {
+					addresses.splice(index, 1);
+					changed();
+					input.focus();
+				});
+				chip.append(label, remove);
+				return chip;
+			}));
+			sync();
+		};
+		// Let the composer's own listeners (autosave) see every change.
+		const changed = () => {
+			render();
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		};
+		const hideSuggestions = () => {
+			suggest.hidden = true;
+			suggest.replaceChildren();
+		};
+		const take = (text) => {
+			addresses.push(text.trim());
+			input.value = "";
+			hideSuggestions();
+			changed();
+		};
+		input.recipientSuggest = (datalist) => {
+			const typed = input.value.trim();
+			const options = Array.from(datalist.options).map((option) => option.value).filter((value) => value && !addresses.includes(value));
+			if (typed.length < 2 || !options.length) return hideSuggestions();
+			suggest.replaceChildren(...options.slice(0, 8).map((value) => {
+				const { name, email } = parseRecipient(value);
+				const item = document.createElement("li");
+				item.setAttribute("role", "option");
+				const button = document.createElement("button");
+				button.type = "button";
+				button.className = "rcpt-option";
+				const title = document.createElement("span");
+				title.textContent = name || email;
+				button.append(title);
+				if (name) {
+					const detail = document.createElement("small");
+					detail.textContent = email;
+					button.append(detail);
+				}
+				// Keep focus (and the keyboard) in the field while a suggestion is tapped.
+				button.addEventListener("pointerdown", (event) => event.preventDefault());
+				button.addEventListener("click", () => {
+					take(value);
+					input.focus();
+				});
+				item.append(button);
+				return item;
+			}));
+			suggest.hidden = false;
+		};
+
+		input.addEventListener("input", (event) => {
+			if (!event.isTrusted) return sync();
+			const { done, rest } = splitRecipients(input.value);
+			if (done.length) {
+				addresses.push(...done);
+				input.value = rest;
+				render();
+			} else {
+				sync();
+			}
+			if (input.value.trim().length < 2) hideSuggestions();
+		});
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				// Enter would submit the form, which sends the message.
+				event.preventDefault();
+				if (input.value.trim()) take(input.value);
+				else $("[data-cmp-subject]", form)?.focus();
+			} else if (event.key === "Backspace" && !input.value && addresses.length) {
+				event.preventDefault();
+				input.value = addresses.pop();
+				changed();
+			}
+		});
+		input.addEventListener("blur", () => {
+			hideSuggestions();
+			if (isCompleteAddress(input.value)) take(input.value);
+		});
+		render();
+	}
+
+	/* The on-screen keyboard covers the bottom of the layout viewport on iOS; expose its
+	   height as --kb so the composer keeps Send above it. Chrome resizes the page itself
+	   (interactive-widget=resizes-content), so there the inset stays 0. */
+
+	function trackKeyboard() {
+		const viewport = window.visualViewport;
+		if (!viewport) return;
+		const update = () => {
+			const inset = viewport.scale > 1.01 ? 0 : Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+			document.documentElement.style.setProperty("--kb", `${inset}px`);
+		};
+		viewport.addEventListener("resize", update);
+		viewport.addEventListener("scroll", update);
+		update();
+	}
+	trackKeyboard();
+
 	/* ---------- composer ---------- */
 
 	function openCompose(href) {

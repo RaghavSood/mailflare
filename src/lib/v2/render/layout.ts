@@ -4,7 +4,7 @@ import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "4";
+export const ASSET_VERSION = "5";
 export const HTMX_VERSION = "2.0.11";
 
 /** The service worker's URL carries the asset versions it precaches (public/sw.js). */
@@ -44,13 +44,13 @@ export function renderNav(ctx: V2Context, nav: NavState): Html {
 				: view.key === "drafts"
 					? navCount(nav.counts.drafts, "total")
 					: html``;
-		return html`<a class="${cx("nav-item", active && "is-active", view.key === "inbox" && nav.counts.inbox > 0 && "has-unread")}" href="${listHref(view.key)}" ${active ? html`aria-current="page"` : ""}>
+		return html`<a class="${cx("nav-item", active && "is-active", view.key === "inbox" && nav.counts.inbox > 0 && "has-unread")}" href="${listHref(view.key)}" title="${view.label}" ${active ? html`aria-current="page"` : ""}>
 			${icon(view.icon)}<span class="nav-label">${view.label}</span>${count}
 		</a>`;
 	});
 	const folders = nav.folders.map((folder) => {
 		const active = nav.active.view === "folder" && nav.active.folderId === folder.id;
-		return html`<a class="${cx("nav-item", active && "is-active", folder.unread > 0 && "has-unread")}" href="${listHref("folder", { folderId: folder.id })}" ${active ? html`aria-current="page"` : ""}>
+		return html`<a class="${cx("nav-item", active && "is-active", folder.unread > 0 && "has-unread")}" href="${listHref("folder", { folderId: folder.id })}" title="${folder.name}" ${active ? html`aria-current="page"` : ""}>
 			<span class="folder-dot" data-color="${folder.color ?? ""}">${icon("folder")}</span><span class="nav-label">${folder.name}</span>${navCount(folder.unread)}
 		</a>`;
 	});
@@ -74,9 +74,9 @@ export function renderNav(ctx: V2Context, nav: NavState): Html {
 		${folders.length ? html`<div class="nav-heading">Folders</div><div class="nav-list">${folders}</div>` : ""}
 		<div class="sidebar-foot">
 			${ctx.vapidPublicKey ? renderPushToggle() : ""}
-			<a class="nav-item subtle" href="/settings/account" hx-boost="false">${icon("settings")}<span class="nav-label">Settings</span></a>
-			<button type="button" class="nav-item subtle" data-help>${icon("keyboard")}<span class="nav-label">Keyboard shortcuts</span><kbd>?</kbd></button>
-			<a class="nav-item subtle" href="${`/v2/switch?to=classic&from=${encodeURIComponent(ctx.url.pathname)}`}" hx-boost="false">${icon("layout")}<span class="nav-label">Switch to classic</span></a>
+			<a class="nav-item subtle" href="/settings/account" hx-boost="false" title="Settings">${icon("settings")}<span class="nav-label">Settings</span></a>
+			<button type="button" class="nav-item subtle" data-help title="Keyboard shortcuts">${icon("keyboard")}<span class="nav-label">Keyboard shortcuts</span><kbd>?</kbd></button>
+			<a class="nav-item subtle" href="${`/v2/switch?to=classic&from=${encodeURIComponent(ctx.url.pathname)}`}" hx-boost="false" title="Switch to classic">${icon("layout")}<span class="nav-label">Switch to classic</span></a>
 		</div>
 	</nav>`;
 }
@@ -129,7 +129,7 @@ export function renderPage(
 <html lang="en" data-theme="${themeAttr}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)">
