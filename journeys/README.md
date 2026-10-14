@@ -17,6 +17,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `11-classic-interface-on-a-phone` | Classic list, reader, drawer, settings tab strip, switching back to v2 |
 | `12-sign-out-clears-offline-copies` | Sign-out clears the per-user cache and outbox |
 | `13-compose-offline-sends-once` | Composer from the offline cache, send queued, delivered exactly once on reconnect with no draft left |
+| `14-saved-copy-recovers-when-the-server-returns` | Server out of reach while the device is online: saved copy, "Couldn't reach Mailflare", recovery |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 
@@ -102,7 +103,9 @@ For writing or debugging a journey, ask an agent that has the Android CLI skills
 
 Things that tripped the first run:
 
-- **Offline on an emulator.** Airplane mode does not cut `adb reverse`; the tunnel runs over the adb transport, not the device network. When a journey turns Airplane mode on, also run `adb reverse --remove tcp:3000`, and run `adb reverse tcp:3000 tcp:3000` again when it turns it off. Check with a fetch from the page if in doubt: an earlier kept-alive connection can still get through.
+- **Offline on an emulator.** Airplane mode does not cut `adb reverse`; the tunnel runs over the adb transport, not the device network. When a journey turns Airplane mode on, also run `adb reverse --remove tcp:3000`, and run `adb reverse tcp:3000 tcp:3000` again when it turns it off. Check with a fetch from the page if in doubt: an earlier kept-alive connection can still get through. Cutting the server off without Airplane mode (journey 14) is how to make it unreachable while the browser still reports being online; the scripted run does that at its relay.
+- **Closing Quick Settings.** A second Back press after Quick Settings has closed leaves Chrome, and closes a tab that a VIEW intent opened. `adb shell cmd statusbar collapse` closes it without that risk.
+- **Edge swipes.** A swipe that starts at the very edge of the screen is Android's Back gesture. Start row swipes a little inside (for example x=1000 on a 1080-px-wide screen).
 - **The page is a WebView to `android layout`.** v2 page content often does not appear in the layout dump. Use `android screen capture --annotate` and the screenshot, as the interaction reference says for WebViews.
 - **Quick Settings.** Wait for Quick Settings to finish opening before tapping the Airplane mode tile; an early tap lands on the page behind it.
 - **Typing URLs.** `adb shell input text` can drop characters in Chrome's address bar and turn the URL into a search. A VIEW intent (`am start -a android.intent.action.VIEW -d <url>`) is the same navigation without the keyboard.
@@ -123,11 +126,12 @@ Push delivery is not a journey, because it needs mail sent from outside the devi
 | 05 | ✅ |
 | 06 | ✅ |
 | 07 | ✅ |
-| 08 | ⚠️ "Verify that the Offline banner is no longer shown" fails as expected: a cached conversation is never refreshed after reconnecting (#20) |
+| 08 | ✅ with the fix for #20 |
 | 09 | ✅ |
 | 10 | ✅ |
 | 11 | ✅ |
 | 12 | ✅ |
+| 14 | ✅ (added with the fix for #20) |
 
 With the fix for #19 (this branch, scripted, Android 16 emulator, Chrome 133, built Worker): 03 ✅ and 04 ✅ with their new Back steps, 05 ✅, 11 ✅.
 

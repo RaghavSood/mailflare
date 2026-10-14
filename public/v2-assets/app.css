@@ -1018,7 +1018,7 @@ body.is-offline [data-undo] { display: none; }
 
 @media (max-width: 899px) {
 	.offline-banner { max-width: 46vw; padding: 0 10px; font-size: 12px; }
-	/* Search is unavailable offline; give the phone topbar to the banner. */
-	body.is-offline .search { display: none; }
-	body.is-offline .offline-banner { flex: 1; max-width: none; }
+	/* Search is unavailable offline or with the server out of reach; give the phone topbar to the banner. */
+	body.is-offline .search, body.is-unreachable .search { display: none; }
+	body.is-offline .offline-banner, body.is-unreachable .offline-banner { flex: 1; max-width: none; }
 }

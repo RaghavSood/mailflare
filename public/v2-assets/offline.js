@@ -60,6 +60,34 @@
 		return same.slice(0, Math.max(0, same.length - (LIMITS[kind] ?? 0)));
 	}
 
+	/* ---------- the banner and cached copies ---------- */
+
+	/**
+	 * The connectivity banner's text. copyTime is when the cached copy on screen
+	 * was stored, already formatted ("" when the page is not a cached copy);
+	 * reach is what the last try to reload it found: "unknown" (not tried since
+	 * coming online), "down" or "up" (the server answered, but the page is held
+	 * because something on it is being worked on).
+	 */
+	function bannerText({ offline, copyTime = "", pending = 0, reach = "unknown" }) {
+		const waiting = pending ? ` · ${pending} ${pending === 1 ? "change" : "changes"} waiting` : "";
+		const copy = copyTime ? ` · copy from ${copyTime}` : "";
+		if (offline) return `Offline${copy}${waiting}`;
+		if (!copyTime) return `Syncing${waiting}`;
+		if (reach === "up") return `Saved copy from ${copyTime}${waiting}`;
+		if (reach === "down") return `Couldn't reach Mailflare${copy}${waiting}`;
+		return `Reconnecting${copy}${waiting}`;
+	}
+
+	const RETRY_FIRST_MS = 1500;
+	const RETRY_MAX_MS = 60000;
+
+	/** How long to wait before try number `attempt` (from 0) to reload a cached copy. */
+	function retryDelay(attempt) {
+		const step = Math.max(0, Math.floor(Number(attempt) || 0));
+		return Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** Math.min(step, 16));
+	}
+
 	/* ---------- what may be queued ---------- */
 
 	/** Forward actions only: undo depends on server state and never queues. */
@@ -390,6 +418,8 @@
 		userFromHtml,
 		markCached,
 		overLimit,
+		bannerText,
+		retryDelay,
 		queueKind,
 		resolveSnoozePreset,
 		prepareFields,

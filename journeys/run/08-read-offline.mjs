@@ -6,11 +6,6 @@ const banner = () => {
 };
 
 const journey = {
-	// Open issue: only this action may fail, and the run fails once it passes (remove this then).
-	knownIssue: {
-		step: "Verify that the \"Offline\" banner is no longer shown",
-		issue: "#20: a cached page is not refreshed after reconnecting, so the offline banner stays",
-	},
 	async setup({ device }) {
 		await device.startSignedIn();
 		await device.ensureServiceWorker();
@@ -74,7 +69,7 @@ const journey = {
 					const body = [...document.querySelectorAll(".msg.is-expanded .msg-content")].at(-1);
 					return window.__j.byText("h1.thread-subject", subject) && body && window.__j.text(body).includes(text.slice(0, 40));
 				}, state, { timeout: 15_000, message: `"${state.subject}" and its message text offline` }).then(async () => {
-					// For the report: whether this is the stored copy, which is what #20 is about.
+					// For the report: whether this is the stored copy, which is what #20 was about.
 					state.offlineCopy = await device.eval(() => ({ cachedAt: document.body.dataset.cachedAt ?? null, banner: document.querySelector("[data-offline-banner]")?.innerText.trim() ?? null }));
 				}, (error) => {
 					const errorPage = device.pages().find((p) => p.url().startsWith("chrome-error:"));

@@ -119,6 +119,24 @@ test("cache rules: owners come from <body data-user>, and only v2 pages, bodies 
 	assert.ok(Offline.isUserCacheName("mf-user-x") && !Offline.isUserCacheName("mf-static-3-2.0.11"));
 });
 
+test("the banner says a cached copy is out of reach only once a try to reload it has failed", () => {
+	const text = (state) => Offline.bannerText(state);
+	assert.equal(text({ offline: true, copyTime: "6:46 PM" }), "Offline · copy from 6:46 PM");
+	assert.equal(text({ offline: true, pending: 1 }), "Offline · 1 change waiting");
+	assert.equal(text({ offline: false, pending: 3 }), "Syncing · 3 changes waiting");
+	assert.equal(text({ offline: false, copyTime: "6:46 PM" }), "Reconnecting · copy from 6:46 PM", "not tried yet since coming online");
+	assert.equal(text({ offline: false, copyTime: "6:46 PM", reach: "down", pending: 2 }), "Couldn't reach Mailflare · copy from 6:46 PM · 2 changes waiting");
+	assert.equal(text({ offline: false, copyTime: "6:46 PM", reach: "up" }), "Saved copy from 6:46 PM", "the server answered; the page waits for a composer or selection");
+	// Offline wins over what the last try found.
+	assert.equal(text({ offline: true, copyTime: "6:46 PM", reach: "down" }), "Offline · copy from 6:46 PM");
+});
+
+test("tries to reload a cached copy back off from 1.5 s to a minute", () => {
+	assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 50].map(Offline.retryDelay), [1500, 3000, 6000, 12000, 24000, 48000, 60000, 60000, 60000]);
+	assert.equal(Offline.retryDelay(-1), 1500);
+	assert.equal(Offline.retryDelay(undefined), 1500);
+});
+
 /** An in-memory outbox and a scripted server. */
 function harness(entries, routes) {
 	const store = new Map(entries.map((entry) => [entry.id, structuredClone(entry)]));

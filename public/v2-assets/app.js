@@ -102,6 +102,8 @@
 	});
 	document.addEventListener("htmx:afterRequest", () => body.classList.remove("is-loading"));
 	document.addEventListener("htmx:responseError", (event) => {
+		// A cached copy's quiet reload retries on its own.
+		if (isQuiet(event.detail.requestConfig)) return;
 		const raw = event.detail.xhr?.responseText || "Something went wrong.";
 		const text = raw.length > 200 ? "Something went wrong." : raw;
 		// A refused list action already changed the rows; reload them, then explain.
@@ -109,6 +111,7 @@
 		else toast(text);
 	});
 	document.addEventListener("htmx:sendError", (event) => {
+		if (isQuiet(event.detail.requestConfig)) return;
 		if (handleOfflineFailure(event.detail)) return;
 		toast("You appear to be offline.");
 	});
@@ -1616,6 +1619,7 @@
 	function refreshQuietly() {
 		// Replayed actions must reach the server before the list is reloaded.
 		if (deferRefreshUntilDrained()) return;
+		if (body.dataset.cachedAt) return refreshCachedPage();
 		const kind = pageKind();
 		const busy = selectedIds().length || $("details.menu[open]") || isTyping(document.activeElement);
 		const path = `${location.pathname}${location.search}`;
@@ -1633,6 +1637,8 @@
 		socket.addEventListener("open", () => {
 			attempt = 0;
 			heartbeat = setInterval(() => socket.readyState === 1 && socket.send("ping"), 25000);
+			// The server is back: a cached copy need not wait for its next try.
+			syncCachedPage({ restart: true });
 		});
 		socket.addEventListener("message", (event) => {
 			try {
@@ -1649,7 +1655,9 @@
 	}
 	connect();
 	document.addEventListener("visibilitychange", () => {
-		if (document.visibilityState === "visible" && pageKind() === "list") refreshQuietly();
+		if (document.visibilityState !== "visible") return;
+		if (body.dataset.cachedAt) syncCachedPage({ restart: true });
+		else if (pageKind() === "list") refreshQuietly();
 	});
 
 	/* ---------- installable app ---------- */
@@ -1881,6 +1889,8 @@
 	let draining = null;
 	let refreshAfterDrain = false;
 	let pendingCount = 0;
+	/** Whether the server answered the last try to reload a cached copy: "unknown", "down" or "up". */
+	let reach = "unknown";
 
 	function withOutboxLock(fn) {
 		return Offline ? Offline.withLock(fn) : fn();
@@ -1905,20 +1915,21 @@
 	function updateConnectivity() {
 		const offline = !navigator.onLine;
 		const cachedAt = Number(body.dataset.cachedAt) || 0;
+		const unreachable = !offline && Boolean(cachedAt) && reach === "down";
 		body.classList.toggle("is-offline", offline);
+		body.classList.toggle("is-unreachable", unreachable);
 		const banner = $("[data-offline-banner]");
 		const text = $("[data-offline-text]");
 		if (banner && text) {
-			const waiting = pendingCount ? ` · ${pendingCount} ${pendingCount === 1 ? "change" : "changes"} waiting` : "";
-			const copy = cachedAt ? ` · copy from ${formatCachedAt(cachedAt)}` : "";
 			banner.hidden = !offline && !cachedAt && !pendingCount;
-			text.textContent = offline ? `Offline${copy}${waiting}` : cachedAt ? `Couldn't reach Mailflare${copy}${waiting}` : `Syncing${waiting}`;
+			const state = { offline, copyTime: cachedAt ? formatCachedAt(cachedAt) : "", pending: pendingCount, reach };
+			text.textContent = Offline ? Offline.bannerText(state) : offline ? "Offline" : "Syncing";
 		}
 		// Search runs on the server.
 		const search = $(".search input");
 		if (search) {
-			search.disabled = offline;
-			search.placeholder = offline ? "Search needs a connection" : "Search mail";
+			search.disabled = offline || unreachable;
+			search.placeholder = offline || unreachable ? "Search needs a connection" : "Search mail";
 		}
 	}
 
@@ -2154,6 +2165,157 @@
 		});
 	}
 
+	/* Cached copies: a page the worker answered from its cache (data-cached-at)
+	   is reloaded as soon as the server answers again, whatever kind of page it
+	   is. Every try replays the outbox first. While the server stays out of
+	   reach the tries back off; coming online, back into view or reconnecting
+	   the live socket tries again at once. A composer, selection, open menu or
+	   field being typed in inside #main holds the reload (only #nav is
+	   refreshed) until it is gone, so nothing being worked on is swapped away. */
+
+	const HELD_RETRY_MS = 5000;
+	/** A try that has not answered by then counts as failed (a request can hang where packets are dropped). */
+	const QUIET_TIMEOUT_MS = 20000;
+	let cachedTimer = 0;
+	let cachedTry = 0;
+	/** The quiet request in flight for a cached copy: its path, and the status it got. */
+	let quiet = null;
+	/** Where the reader was on the cached copy, put back once the fresh page settles. */
+	let placeToRestore = null;
+
+	const isQuiet = (config) => Boolean(quiet && config && config.path === quiet.path);
+
+	function setReach(value) {
+		if (reach === value) return;
+		reach = value;
+		updateConnectivity();
+	}
+
+	function holdsCachedPage() {
+		const main = $("#main");
+		if (!main) return false;
+		const active = document.activeElement;
+		return Boolean($("[data-composer]", main) || selectedIds().length || $("details.menu[open]", main) || (isTyping(active) && main.contains(active)));
+	}
+
+	function scheduleCachedRefresh(delay) {
+		clearTimeout(cachedTimer);
+		if (body.dataset.cachedAt && navigator.onLine) cachedTimer = setTimeout(syncCachedPage, delay);
+	}
+
+	/** Replay the outbox, then reload the cached copy on screen. */
+	function syncCachedPage({ restart = false } = {}) {
+		clearTimeout(cachedTimer);
+		if (!body.dataset.cachedAt || !navigator.onLine) return;
+		if (restart) cachedTry = 0;
+		drainOutbox().finally(refreshCachedPage);
+	}
+
+	function rememberPlace() {
+		return {
+			path: `${location.pathname}${location.search}`,
+			x: window.scrollX,
+			y: window.scrollY,
+			panes: $$(".list, .thread", page() ?? document).map((pane) => pane.scrollTop),
+			open: $$(".msg.is-expanded").map((section) => section.dataset.id),
+			messageCursor,
+		};
+	}
+
+	function restorePlace(place) {
+		if (place.path !== `${location.pathname}${location.search}`) return;
+		for (const section of messages()) {
+			if (place.open.includes(section.dataset.id) && section.classList.contains("is-collapsed")) expandMessage(section);
+		}
+		if (messages().length) messageCursor = Math.min(place.messageCursor, messages().length - 1);
+		restoreScroll(place);
+	}
+
+	/** Mail frames size themselves after the swap, so keep putting the scroll back for a moment, until the reader scrolls. */
+	function restoreScroll(place) {
+		const until = Date.now() + 2000;
+		let moved = false;
+		const stop = () => (moved = true);
+		const events = ["wheel", "touchstart", "keydown", "mousedown"];
+		events.forEach((name) => window.addEventListener(name, stop, { once: true, passive: true, capture: true }));
+		const apply = () => {
+			if (moved || place.path !== `${location.pathname}${location.search}`) return events.forEach((name) => window.removeEventListener(name, stop, { capture: true }));
+			let short = false;
+			$$(".list, .thread", page() ?? document).forEach((pane, index) => {
+				const want = place.panes[index];
+				if (want === undefined) return;
+				pane.scrollTop = want;
+				if (Math.abs(pane.scrollTop - want) > 1) short = true;
+			});
+			window.scrollTo(place.x, place.y);
+			if (Math.abs(window.scrollY - place.y) > 1) short = true;
+			if (short && Date.now() < until) setTimeout(apply, 100);
+			else events.forEach((name) => window.removeEventListener(name, stop, { capture: true }));
+		};
+		apply();
+	}
+
+	function refreshCachedPage() {
+		clearTimeout(cachedTimer);
+		if (!body.dataset.cachedAt || !navigator.onLine || quiet) return;
+		if (deferRefreshUntilDrained()) return;
+		const path = `${location.pathname}${location.search}`;
+		const held = holdsCachedPage();
+		// Held, and the server already answered: wait for the page to be let go.
+		if (held && reach === "up") return scheduleCachedRefresh(HELD_RETRY_MS);
+		let request;
+		if (held) {
+			// Learn whether the server is back, and bring #nav up to date, without touching #main.
+			quiet = { path: `/v2/poll?path=${encodeURIComponent(path)}`, status: 0 };
+			request = window.htmx.ajax("GET", quiet.path, { target: "#nav", select: "#nav", swap: "outerHTML", source: body });
+		} else {
+			quiet = { path, status: 0 };
+			placeToRestore = rememberPlace();
+			request = load("GET", path);
+		}
+		const sent = quiet;
+		const settle = (status) => {
+			if (quiet !== sent) return;
+			clearTimeout(watchdog);
+			settleCachedRefresh(held, status);
+		};
+		const watchdog = setTimeout(() => settle(-1), QUIET_TIMEOUT_MS);
+		Promise.resolve(request).then(() => settle(sent.status), () => settle(-1));
+	}
+
+	/**
+	 * What a quiet try found decides the next one. status is -1 when the request
+	 * failed (no server), 0 when htmx never sent it (queued behind another).
+	 */
+	function settleCachedRefresh(held, status) {
+		quiet = null;
+		if (status === 0) {
+			placeToRestore = null;
+			scheduleCachedRefresh(HELD_RETRY_MS);
+			return;
+		}
+		if (status < 0 || status >= 500) {
+			placeToRestore = null;
+			setReach("down");
+			scheduleCachedRefresh(Offline ? Offline.retryDelay(cachedTry++) : HELD_RETRY_MS);
+			return;
+		}
+		cachedTry = 0;
+		if (!body.dataset.cachedAt) {
+			// The fresh page is on screen (the swap cleared the mark).
+			setReach("unknown");
+			return;
+		}
+		placeToRestore = null;
+		if (held) {
+			setReach("up");
+			scheduleCachedRefresh(HELD_RETRY_MS);
+		} else {
+			// The server answered, but not with this page (it is gone, or needs a sign-in): show what it says.
+			location.reload();
+		}
+	}
+
 	/** Rows still waiting on queued actions look the way those actions will leave them. */
 	async function applyPendingToList() {
 		if (!Offline || !currentUser || pageKind() !== "list") return;
@@ -2195,6 +2357,7 @@
 	document.addEventListener("htmx:afterRequest", (event) => {
 		const { xhr, requestConfig: config, successful } = event.detail;
 		if (!xhr || !config || config.verb !== "get") return;
+		if (isQuiet(config)) quiet.status = xhr.status;
 		let url;
 		try {
 			url = new URL(xhr.responseURL, location.href);
@@ -2206,16 +2369,27 @@
 			signedOut();
 			return;
 		}
-		if (!successful || xhr.status !== 200 || url.pathname !== new URL(config.path, location.href).pathname) return;
-		if (Offline?.cacheKind(url) === "page") postToWorker({ type: "store-page", url: url.href, html: xhr.responseText });
+		if (!successful || xhr.status !== 200) return;
+		// Whatever the server sent in place of a cached copy is fresh.
 		if (event.detail.target?.id === "main" && body.dataset.cachedAt) {
 			delete body.dataset.cachedAt;
+			clearTimeout(cachedTimer);
+			reach = "unknown";
 			updateConnectivity();
 		}
+		if (url.pathname !== new URL(config.path, location.href).pathname) return;
+		if (Offline?.cacheKind(url) === "page") postToWorker({ type: "store-page", url: url.href, html: xhr.responseText });
 	});
 
 	document.addEventListener("htmx:afterSettle", (event) => {
-		if (event.detail.target?.id === "main") applyPendingToList();
+		if (event.detail.target?.id !== "main") return;
+		applyPendingToList();
+		if (placeToRestore) {
+			// After every afterSettle of this swap (htmx fires one per settled element, and onPage scrolls on each).
+			const place = placeToRestore;
+			placeToRestore = null;
+			setTimeout(() => restorePlace(place), 0);
+		}
 	});
 
 	// Online, the worker keeps a copy of an attachment as it is downloaded (the
@@ -2253,12 +2427,18 @@
 	});
 
 	window.addEventListener("online", () => {
+		reach = "unknown";
 		updateConnectivity();
+		if (body.dataset.cachedAt) return syncCachedPage({ restart: true });
 		drainOutbox().then((result) => {
 			if (result && !result.sent && !refreshAfterDrain) refreshQuietly();
 		});
 	});
-	window.addEventListener("offline", updateConnectivity);
+	window.addEventListener("offline", () => {
+		clearTimeout(cachedTimer);
+		reach = "unknown";
+		updateConnectivity();
+	});
 
 	updateConnectivity();
 	showFlash();
@@ -2269,6 +2449,8 @@
 			await applyPendingToList();
 			if (!navigator.onLine) return;
 			await drainOutbox();
+			// Served from the cache although the browser is online: the server is out of reach.
+			refreshCachedPage();
 			// Keep the full-page composer so mail can be written offline.
 			try {
 				if (!sessionStorage.getItem("mf_compose_warm")) {
