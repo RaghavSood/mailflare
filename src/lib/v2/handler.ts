@@ -20,6 +20,7 @@ import type { V2Context, V2Mailbox, V2Theme, V2ViewKey } from "./types";
 import { loadFolder, loadMailboxes } from "./data/context";
 import {
 	createReplyDraft,
+	discardComposerDraft,
 	discardDraft,
 	emptyDraft,
 	loadDraft,
@@ -577,7 +578,9 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		}
 		case "draft/discard": {
 			const draftId = String(form.get("draftId") ?? "");
+			const composeKey = String(form.get("composeKey") ?? "");
 			if (ID.test(draftId)) await discardDraft(env, user, draftId);
+			if (ID.test(composeKey)) await discardComposerDraft(env, user, composeKey);
 			if (ctx.htmx || request.headers.get("accept")?.includes("application/json")) return jsonResponse({ ok: true });
 			return redirect(safeReturnPath(String(form.get("return") ?? ""), "/v2/drafts"));
 		}

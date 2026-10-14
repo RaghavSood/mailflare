@@ -1111,7 +1111,11 @@
 		const data = composerData(form, false);
 		// The device copy is written first and kept until the server has the draft.
 		await withOutboxLock(async () => {
+			// Discarded while this save waited for the outbox.
+			if (form.dataset.discarding) return;
 			const local = await keepDraftOnDevice(form, data);
+			// From here the server may have a draft for this composer, even if the response is lost.
+			if (navigator.onLine) form.dataset.reachedServer = "1";
 			try {
 				const response = await fetch("/v2/draft", { method: "POST", body: data, headers: { Accept: "application/json", "X-Mailflare-User": body.dataset.user ?? "" } });
 				const result = await response.json();
@@ -1290,15 +1294,55 @@
 		if (response.ok) button.closest(".file-chip")?.remove();
 	}
 
+	/**
+	 * Throw away what the composer holds: its device copy and anything else it
+	 * has queued, and the server's draft. Saves hold the outbox lock, so one in
+	 * flight finishes first and its draft is discarded too. A discard that
+	 * cannot reach the server is queued, naming the draft by id and by composer
+	 * key (the server may have it under the key alone, when a save's response
+	 * was lost).
+	 */
 	async function discard(form) {
+		if (form.dataset.discarding) return;
+		form.dataset.discarding = "1";
 		form.dataset.closed = "1";
-		const draftId = form.elements.draftId.value;
-		if (draftId) {
-			const data = new FormData();
-			data.set("draftId", draftId);
-			await fetch("/v2/draft/discard", { method: "POST", body: data, headers: { Accept: "application/json" } });
-		}
-		toast("Draft discarded.");
+		let outcome = "discarded";
+		await withOutboxLock(async () => {
+			if (Offline && currentUser) {
+				try {
+					for (const entry of Offline.ofComposer(await Offline.outbox.all(), currentUser, form.dataset.clientKey)) await Offline.outbox.delete(entry.id);
+				} catch {
+					/* no IndexedDB: nothing was kept on the device */
+				}
+			}
+			const draftId = form.elements.draftId.value;
+			if (!draftId && !form.dataset.reachedServer) return;
+			const fields = [["draftId", draftId], ["composeKey", form.elements.composeKey?.value ?? ""]];
+			if (navigator.onLine) {
+				const data = new FormData();
+				for (const [name, value] of fields) data.set(name, value);
+				try {
+					const response = await fetch("/v2/draft/discard", { method: "POST", body: data, headers: { Accept: "application/json", "X-Mailflare-User": currentUser } });
+					if (response.status < 500) return;
+				} catch {
+					/* unreachable: queue it */
+				}
+			}
+			outcome = "queued";
+			const entry = { id: Offline?.newRequestId(), user: currentUser, kind: "discard", key: form.dataset.clientKey, createdAt: Date.now(), fields };
+			try {
+				if (!Offline || !currentUser) throw new Error("no outbox");
+				await Offline.outbox.add(entry);
+			} catch {
+				outcome = "kept";
+			}
+		});
+		if (outcome === "queued") requestOutboxSync();
+		await updatePending();
+		const message = outcome === "kept" ? "You're offline. The draft is still in Drafts." : "Draft discarded.";
+		// Offline, the page composer leaves by a full navigation, which would drop a toast.
+		if (form.dataset.mode === "page" && (outcome !== "discarded" || !navigator.onLine)) flashAfterNavigation(message);
+		else toast(message);
 		closeComposer(form, { save: false });
 	}
 

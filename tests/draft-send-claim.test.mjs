@@ -28,7 +28,7 @@ await build({
 			export { users, domains, mailboxes, messages } from "./src/db/schema/index.ts";
 			export { claimDraftForSend, releaseDraftClaim } from "./src/lib/email/draft-claim.ts";
 			export { DRAFT_SEND_CLAIM_TTL_MS, staleClaimCutoff, refusedClaimOutcome } from "./src/lib/email/draft-claim-utils.ts";
-			export { saveDraft, sendCompose } from "./src/lib/v2/data/compose.ts";
+			export { discardComposerDraft, saveDraft, sendCompose } from "./src/lib/v2/data/compose.ts";
 			export { DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { eq } from "drizzle-orm";
 		`,
@@ -333,4 +333,20 @@ test("a failed send with only a composer key leaves the draft to try again, and 
 	assert.equal(working.sent.length, 1);
 	assert.deepEqual((await outbound()).map((item) => item.status).sort(), ["failed", "sent"]);
 	assert.equal(await row(kept.id), null);
+});
+
+test("a composer discarded before it learned its draft id has the draft found by its key and removed; the sent copy never is", async () => {
+	const email = sendBinding();
+	email.open();
+	const env = envWith(email.binding);
+	// A save whose response was lost: the server has the draft, the composer only knows its key.
+	await m.saveDraft(env, SESSION, composeInput(null, KEY));
+	await draft({ id: "msg_other_user", userId: "usr_b", mailboxId: null, composeKey: KEY });
+	await m.discardComposerDraft(env, SESSION, KEY);
+	assert.equal((await draftsOf(KEY)).length, 0);
+	assert.ok(await row("msg_other_user"), "another user's draft with the same key stays");
+	// Once sent, a discard by the same key (a stale queued one) leaves the sent copy alone.
+	await m.sendCompose(env, SESSION, composeInput(null, "a-sent-composer"));
+	await m.discardComposerDraft(env, SESSION, "a-sent-composer");
+	assert.deepEqual((await outbound()).map((item) => [item.status, item.composeKey]), [["sent", "a-sent-composer"]]);
 });

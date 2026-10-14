@@ -100,6 +100,20 @@ test("a composer keeps one pending draft save, and sending it replaces that save
 	assert.equal(list[0].id, "a0", "kept in the order the user acted");
 });
 
+test("discarding a composer supersedes everything it had queued, and only that", () => {
+	const entry = (id, kind, key, createdAt, user = "u") => ({ id, kind, key, createdAt, user, fields: [] });
+	let list = [entry("a1", "act", undefined, 1), entry("d1", "draft", "k1", 2), entry("d2", "draft", "k2", 3), entry("x1", "discard", "k1", 4)];
+	list = Offline.enqueue(list, entry("x2", "discard", "k1", 5));
+	assert.deepEqual(list.map((item) => item.id), ["a1", "d2", "x2"], "the composer's save and earlier discard go; others stay");
+	list = Offline.enqueue(list, entry("x3", "discard", undefined, 6));
+	assert.deepEqual(list.map((item) => item.id), ["a1", "d2", "x2", "x3"], "an entry without a key supersedes nothing");
+
+	const stored = [entry("d1", "draft", "k1", 1), entry("s1", "send", "k1", 2), entry("d2", "draft", "k2", 3), entry("d3", "draft", "k1", 4, "v"), entry("a1", "act", undefined, 5)];
+	assert.deepEqual(plain(Offline.ofComposer(stored, "u", "k1")).map((item) => item.id), ["d1", "s1"]);
+	assert.deepEqual(plain(Offline.ofComposer(stored, "u", "")), [], "no key, no composer");
+	assert.deepEqual(plain(Offline.ofComposer(stored, "u", undefined)), []);
+});
+
 test("cache rules: owners come from <body data-user>, and only v2 pages, bodies and attachments are kept", () => {
 	assert.equal(Offline.userFromHtml(`<!doctype html><html><body hx-boost="true" data-user="usr_1">`), "usr_1");
 	assert.equal(Offline.userFromHtml(`<!doctype html><html><body><div data-user="usr_1">`), null);
@@ -253,6 +267,40 @@ test("a queued draft save gives its composer's later entries the server draft id
 	await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a", onDraftId: (key, id) => ids.push([key, id]) });
 	assert.deepEqual(ids[0], ["k1", "msg_d"]);
 	assert.deepEqual(h.calls.map((call) => [call.path, field(call, "draftId")]), [["/v2/draft", ""], ["/v2/draft", "msg_d"], ["/v2/send", "msg_d"]], "one draft, updated, then sent");
+});
+
+test("a queued discard asks the server to discard by id and composer key, and never saves the draft", async () => {
+	let online = false;
+	const h = harness([entry("e1", "discard", [["draftId", "msg_d"], ["composeKey", "k1"]], { key: "k1" })], {
+		"/v2/draft/discard": () => (online ? { body: JSON.stringify({ ok: true }) } : "offline"),
+	});
+	let result = await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a" });
+	assert.deepEqual({ sent: result.sent, remaining: result.remaining }, { sent: 0, remaining: 1 }, "kept until the server can be reached");
+	online = true;
+	result = await Offline.drain(h.outbox, { fetch: h.fetch, user: "usr_a" });
+	assert.deepEqual(h.calls.map((call) => [call.path, field(call, "draftId"), field(call, "composeKey")]), [
+		["/v2/draft/discard", "msg_d", "k1"],
+		["/v2/draft/discard", "msg_d", "k1"],
+	]);
+	assert.deepEqual({ sent: result.sent, remaining: result.remaining }, { sent: 1, remaining: 0 });
+
+	// A server error is retried later, not dropped.
+	const failing = harness([entry("e2", "discard", [["draftId", ""], ["composeKey", "k2"]], { key: "k2" })], { "/v2/draft/discard": { status: 503 } });
+	result = await Offline.drain(failing.outbox, { fetch: failing.fetch, user: "usr_a" });
+	assert.equal(result.remaining, 1);
+	assert.equal(failing.store.get("e2").attempts, 1);
+
+	// A save of the same composer replayed first (queued before the discard) hands the discard its draft id.
+	const ordered = harness(
+		[
+			entry("e3", "draft", [["to", "a@b.c"], ["draftId", ""], ["composeKey", "k3"]], { key: "k3" }),
+			entry("e4", "discard", [["draftId", ""], ["composeKey", "k3"]], { key: "k3" }),
+		],
+		{ "/v2/draft": { body: JSON.stringify({ draftId: "msg_k3" }) }, "/v2/draft/discard": { body: "{}" } },
+	);
+	await Offline.drain(ordered.outbox, { fetch: ordered.fetch, user: "usr_a" });
+	assert.deepEqual(ordered.calls.map((call) => [call.path, field(call, "draftId")]), [["/v2/draft", ""], ["/v2/draft/discard", "msg_k3"]]);
+	assert.equal(ordered.store.size, 0);
 });
 
 test("a signed-out replay stops and reports it, keeping nothing for anyone else", async () => {

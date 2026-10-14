@@ -148,11 +148,18 @@
 	/**
 	 * The outbox after adding an entry. A composer keeps at most one pending
 	 * draft save, and sending it supersedes that save (the send saves first).
+	 * Discarding it supersedes everything the composer still had queued: the
+	 * discard is all that is left to tell the server.
 	 */
 	function enqueue(entries, entry) {
-		const sameComposer = (item) => entry.key && item.key === entry.key && item.kind === "draft";
-		const kept = entry.kind === "draft" || entry.kind === "send" ? entries.filter((item) => !sameComposer(item)) : entries.slice();
+		const sameComposer = (item) => entry.key && item.key === entry.key && (entry.kind === "discard" || item.kind === "draft");
+		const kept = entry.kind === "draft" || entry.kind === "send" || entry.kind === "discard" ? entries.filter((item) => !sameComposer(item)) : entries.slice();
 		return kept.concat([entry]).sort(byQueueOrder);
+	}
+
+	/** One user's queued entries for one composer: what discarding that composer removes. */
+	function ofComposer(entries, user, key) {
+		return key ? entries.filter((item) => item.user === user && item.key === key) : [];
 	}
 
 	function byQueueOrder(a, b) {
@@ -232,6 +239,8 @@
 			const flag = fieldValue(entry.fields, "conversation") === "1" ? "quiet" : "partial";
 			return settle(await post(fetchFn, "/v2/act", entry.fields.concat([[flag, "1"]]), user, "text/html"));
 		}
+		// The server finds the draft by its id or, when the composer never learned it, by the composer key.
+		if (entry.kind === "discard") return settle(await post(fetchFn, "/v2/draft/discard", entry.fields, user, "application/json"));
 		const text = entry.fields.filter(([key]) => key !== "attachments");
 		const saved = await post(fetchFn, "/v2/draft", text, user, "application/json");
 		if (!saved) return OFFLINE;
@@ -425,6 +434,7 @@
 		prepareFields,
 		newRequestId,
 		enqueue,
+		ofComposer,
 		withDraftId,
 		fieldValue,
 		toFormData,

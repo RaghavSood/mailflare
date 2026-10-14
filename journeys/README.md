@@ -18,6 +18,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `12-sign-out-clears-offline-copies` | Sign-out clears the per-user cache and outbox |
 | `13-compose-offline-sends-once` | Composer from the offline cache, send queued, delivered exactly once on reconnect with no draft left |
 | `14-saved-copy-recovers-when-the-server-returns` | Server out of reach while the device is online: saved copy, "Couldn't reach Mailflare", recovery |
+| `15-discard-offline-draft` | Drafts discarded offline (one only on the device, one the server had) stay gone on reconnect |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 

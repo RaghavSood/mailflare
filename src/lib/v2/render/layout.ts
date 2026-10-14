@@ -5,7 +5,7 @@ import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { brandingHeadOf } from "./branding";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "9";
+export const ASSET_VERSION = "10";
 export const HTMX_VERSION = "2.0.11";
 
 /** The service worker's URL carries the asset versions it precaches (public/sw.js). */

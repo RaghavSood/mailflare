@@ -198,6 +198,22 @@ export async function discardDraft(env: CloudflareEnv, user: SessionUser, draftI
 	await deleteMessageWithObjects(env, db, draft.id, draft.rawR2Key);
 }
 
+/**
+ * Discard the draft of one composer, found by its key: a composer discarded
+ * before it learned its draft id (a save still in flight, or one whose
+ * response was lost) still has its draft removed. Only a draft: the sent copy
+ * keeps the same key and is never touched.
+ */
+export async function discardComposerDraft(env: CloudflareEnv, user: SessionUser, composeKey: string): Promise<void> {
+	const db = getDb(env);
+	const [draft] = await db
+		.select({ id: messages.id, rawR2Key: messages.rawR2Key })
+		.from(messages)
+		.where(and(eq(messages.userId, user.id), eq(messages.composeKey, composeKey), eq(messages.status, "draft")))
+		.limit(1);
+	if (draft) await deleteMessageWithObjects(env, db, draft.id, draft.rawR2Key);
+}
+
 export async function removeDraftAttachment(env: CloudflareEnv, user: SessionUser, draftId: string, attachmentId: string): Promise<boolean> {
 	const draft = await selectDraftWithBody(getDb(env), user.id, draftId);
 	if (!draft) return false;
