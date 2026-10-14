@@ -88,7 +88,7 @@ self.addEventListener("push", (event) => {
 	event.waitUntil(self.registration.showNotification(title, {
 		body: data.subject || "(no subject)",
 		tag: data.messageId || undefined,
-		icon: "/icon-192.png",
+		icon: typeof data.icon === "string" && data.icon.startsWith("/api/branding/icon/") ? data.icon : "/icon-192.png",
 		data: { url },
 	}));
 });

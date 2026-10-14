@@ -2,6 +2,7 @@ import { cx, html, type Html } from "../html";
 import { icon } from "../icons";
 import { V2_VIEWS, listHref, v2ToClassic } from "../paths";
 import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
+import { brandingHeadOf } from "./branding";
 import { formatCount } from "./format";
 
 export const ASSET_VERSION = "5";
@@ -93,11 +94,19 @@ function themeIcon(theme: V2Context["theme"]): Html {
 	return icon(theme === "dark" ? "moon" : theme === "light" ? "sun" : "monitor");
 }
 
+/** The licensed custom icon fills the mark; the packaged mark is the mail glyph on the accent colour. */
+function brandMark(customIcon: string | null): Html {
+	return customIcon
+		? html`<img class="brand-mark" src="${customIcon}" alt="" width="34" height="34" style="background:none;object-fit:contain">`
+		: html`<span class="brand-mark">${icon("mail")}</span>`;
+}
+
 export function renderTopbar(ctx: V2Context, q: string): Html {
+	const brand = brandingHeadOf(ctx);
 	const nextTheme = ctx.theme === "system" ? "light" : ctx.theme === "light" ? "dark" : "system";
 	return html`<header id="topbar" class="topbar">
 		<button type="button" class="icon-button nav-toggle" data-nav-toggle aria-label="Menu">${icon("menu")}</button>
-		<a class="brand" href="/v2/inbox"><span class="brand-mark">${icon("mail")}</span><span class="brand-name">Mailflare</span></a>
+		<a class="brand" href="/v2/inbox">${brandMark(brand.brandIcon)}<span class="brand-name">${brand.appName}</span></a>
 		<form class="search" action="/v2/search" method="get" role="search">
 			${icon("search", "icon search-icon")}
 			<input type="search" name="q" value="${q}" placeholder="Search mail" aria-label="Search mail" autocomplete="off" spellcheck="false" enterkeyhint="search">
@@ -125,6 +134,7 @@ export function renderPage(
 	input: { title: string; main: Html; nav: NavState; q?: string; toast?: Html | null; dock?: Html | null },
 ): Html {
 	const themeAttr = ctx.theme === "system" ? "" : ctx.theme;
+	const brand = brandingHeadOf(ctx);
 	return html`<!doctype html>
 <html lang="en" data-theme="${themeAttr}">
 <head>
@@ -135,12 +145,12 @@ export function renderPage(
 <meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)">
 <meta name="htmx-config" content="${HTMX_CONFIG}">
 <title>${input.title}</title>
-<link rel="icon" href="/favicon.ico">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="${brand.favicon}">
+<link rel="manifest" href="${brand.manifest}">
+<link rel="apple-touch-icon" href="${brand.appleTouchIcon}">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Mailflare">
+<meta name="apple-mobile-web-app-title" content="${brand.appName}">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="${`/v2-assets/app.css?v=${ASSET_VERSION}`}">
 <script src="${`/v2-assets/htmx.min.js?v=${HTMX_VERSION}`}" defer></script>

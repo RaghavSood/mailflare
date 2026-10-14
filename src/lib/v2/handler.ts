@@ -4,6 +4,8 @@ import { contacts } from "@/db/schema";
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import { getSessionIdFromToken, getSessionTokenFromRequestHeaders, getUserFromSession } from "@/lib/auth/session";
 import type { SessionUser } from "@/lib/auth/types";
+import { getCachedBranding } from "@/lib/branding/service";
+import type { Branding } from "@/lib/branding/types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
 import { getMessageHeaderDetailsForUser } from "@/lib/email/message-headers";
 import { MessageActionError } from "@/lib/messages/actions";
@@ -124,7 +126,7 @@ async function loadIdentity(env: CloudflareEnv, request: Request): Promise<{ use
 	return identity;
 }
 
-function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, mailboxes: V2Mailbox[], url: URL): V2Context {
+function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, mailboxes: V2Mailbox[], url: URL, branding: Branding): V2Context {
 	const selected = readCookie(request, "mf_mb");
 	const selectedMailboxId = selected && mailboxes.some((mailbox) => mailbox.id === selected) ? selected : null;
 	const theme = readCookie(request, "mf_theme");
@@ -140,6 +142,7 @@ function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, m
 		shortcutsEnabled: user.keyboardShortcutsEnabled !== false,
 		htmx: request.headers.get("hx-request") === "true",
 		vapidPublicKey: getPushConfig(env)?.publicKey ?? null,
+		branding,
 	};
 }
 
@@ -463,7 +466,7 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	// Actions queued offline name the user who queued them; never apply them as anyone else.
 	const queuedBy = request.headers.get("x-mailflare-user");
 	if (method === "POST" && queuedBy && queuedBy !== user.id) return htmlResponse("This change was made while signed in as someone else.", { status: 409 });
-	const ctx = buildContext(env, request, user, identity.mailboxes, url);
+	const ctx = buildContext(env, request, user, identity.mailboxes, url, await getCachedBranding(env));
 
 	if (route.kind === "home") return redirect("/v2/inbox");
 	if (route.kind === "notFound") {

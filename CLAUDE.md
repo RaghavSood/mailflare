@@ -134,6 +134,8 @@ Mailbox authorization is separate from user role and goes through `src/lib/mailb
 
 Pro/Team keys are validated against Paymug (`src/lib/licenses/`); only a one-way key hash is stored. Without an active license the app falls back to the default name, icon, and favicon, and custom branding is unavailable. `getLicenseEntitlements` is the gate.
 
+Branding carries into the installed v2 app. Without custom branding v2 links the static `/manifest.webmanifest` and icons; with it, `brandingHead` (`src/lib/branding/install-utils.ts`) points at `/api/branding/manifest` and `/api/branding/icon/<192|512|maskable-512|apple-touch>`, versioned by `app_settings.updated_at`. Neither runtime can resize images, so the admin branding page renders those PNGs with a canvas (`install-icons.ts`) and the API checks each one's IHDR size; the icon routes always answer, falling back to the packaged file of the same size. v2 pages and push notices read branding through `getCachedBranding` (15 s per isolate), because the license lookup upserts.
+
 ### Self-update
 
 The admin overview dispatches `deploy-update.yml` (constant in `src/app/api/admin/update/utils.ts`) in the installation repo, which merges the upstream default branch and pushes it. It does not migrate, build, or deploy; the connected Cloudflare Git integration deploys the push. The admin update card separately reports and applies pending D1 migrations through the Worker binding.

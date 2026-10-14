@@ -4,6 +4,8 @@ export type PushNotificationPayload = {
 	from: string;
 	fromName: string | null;
 	subject: string | null;
+	/** A same-origin path to the licensed custom icon; absent shows the packaged icon. */
+	icon?: string;
 };
 
 /**

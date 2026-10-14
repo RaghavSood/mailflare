@@ -1,6 +1,8 @@
 import { and, count, desc, eq, gt, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { pushSubscriptions, sessions } from "@/db/schema";
+import { pushNotificationIcon } from "@/lib/branding/install-utils";
+import { getCachedBranding } from "@/lib/branding/service";
 import { newId } from "@/lib/ids";
 import {
 	getPushConfig,
@@ -106,11 +108,22 @@ export async function enqueuePushNotifications(env: PushEnv, userIds: string[], 
 	const openConnections = new Map(await Promise.all(subscribed.map(async (userId) => [userId, await getOpenConnectionCount(env, userId)] as const)));
 	const recipients = selectPushRecipients(userIds, subscribed, openConnections);
 	if (recipients.length > 0) {
+		const icon = await getPushIcon(env);
+		const notice = icon ? { ...notification, icon } : notification;
 		await env.OUTBOUND_QUEUE.sendBatch(recipients.map((userId) => ({
-			body: { kind: "push.notify", userId, notification } satisfies PushQueueMessage,
+			body: { kind: "push.notify", userId, notification: notice } satisfies PushQueueMessage,
 		})));
 	}
 	return recipients;
+}
+
+/** A licensed custom icon for the notice; the service worker shows the packaged one otherwise. */
+async function getPushIcon(env: PushEnv): Promise<string | null> {
+	try {
+		return pushNotificationIcon(await getCachedBranding(env));
+	} catch {
+		return null;
+	}
 }
 
 /**

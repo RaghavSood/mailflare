@@ -335,3 +335,19 @@ test("each kind of cached entry keeps only its most recent ones", async () => {
 	assert.ok(after.includes("/v2/inbox/msg_5"), "a page visited again is fresh again");
 	assert.ok(!after.includes("/v2/inbox/msg_6"), "the oldest goes");
 });
+
+test("a push shows the licensed custom icon the server sends, and the packaged icon otherwise", async () => {
+	const worker = loadWorker();
+	const shown = [];
+	worker.self.registration.showNotification = async (title, options) => { shown.push(options.icon); };
+	const push = async (data) => {
+		let done;
+		worker.listeners.push({ data: { json: () => data }, waitUntil: (promise) => { done = promise; } });
+		await done;
+	};
+	await push({ messageId: "m1", from: "a@b.c", subject: "Hi" });
+	await push({ messageId: "m2", from: "a@b.c", subject: "Hi", icon: "/api/branding/icon/192?v=1760000000" });
+	// Only the branding route is trusted as an icon source.
+	await push({ messageId: "m3", from: "a@b.c", subject: "Hi", icon: "https://evil.example/x.png" });
+	assert.deepEqual(shown, ["/icon-192.png", "/api/branding/icon/192?v=1760000000", "/icon-192.png"]);
+});

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { renderInstallIcons } from "./install-icons";
 import { BRANDING_ICON_ACCEPT, saveBranding } from "./utils";
 
 export default function BrandingPage() {
@@ -54,7 +55,7 @@ export default function BrandingPage() {
 		setSaving(true);
 		setStatus(null);
 		try {
-			await saveBranding(appName.trim(), icon);
+			await saveBranding(appName.trim(), icon, icon ? await renderInstallIcons(icon) : null);
 			await branding.refreshBranding();
 			setIcon(null);
 			setStatus("Branding updated");
@@ -74,7 +75,7 @@ export default function BrandingPage() {
 			<Card className="rounded-3xl border-0 bg-white p-6">
 				<CardHeader className="py-0">
 					<CardTitle className="flex items-center gap-2"><Palette className="h-5 w-5" />App identity</CardTitle>
-					<CardDescription>The icon is also used as the browser favicon.</CardDescription>
+					<CardDescription>The icon is also used as the browser favicon and for the installed app. Install sizes are made from it in your browser.</CardDescription>
 				</CardHeader>
 				<CardContent className="pt-6">
 					<form onSubmit={submit} className="space-y-6">
