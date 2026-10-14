@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { getDb } from "@/db";
+import { and, eq, notInArray } from "drizzle-orm";
+import { getDb, type AppDatabase } from "@/db";
 import { messages } from "@/db/schema";
 import { selectDraftWithBody } from "@/app/api/drafts/[id]/utils";
 import type { SessionUser } from "@/lib/auth/types";
@@ -14,7 +14,7 @@ import { formatEmailAddress, getEmailAddressList } from "@/lib/email/address";
 import { claimDraftForSend, releaseDraftClaim } from "@/lib/email/draft-claim";
 import { newId } from "@/lib/ids";
 import type { V2Mailbox } from "../types";
-import { buildQuoteHtml, buildReplyRecipients, draftForSend, htmlToMailText, normalizeRecipients, replySubject, type ReplyMode } from "./compose-utils";
+import { buildQuoteHtml, buildReplyRecipients, DraftGoneError, draftForSend, htmlToMailText, normalizeRecipients, replySubject, type ReplyMode } from "./compose-utils";
 import { loadThread } from "./thread";
 
 export type ComposeDraft = {
@@ -46,6 +46,12 @@ export type ComposeInput = {
 	inReplyTo: string | null;
 	references: string | null;
 	threadId: string | null;
+	/**
+	 * Made up by the browser for each composer and sent with every save and
+	 * send, so a request that does not know its draft id yet finds the draft
+	 * the composer already has instead of starting a second one.
+	 */
+	composeKey: string | null;
 };
 
 export function emptyDraft(mailbox: V2Mailbox | undefined): ComposeDraft {
@@ -98,46 +104,87 @@ export async function loadDraft(env: CloudflareEnv, user: SessionUser, draftId: 
 /**
  * Create or update a draft. An update keeps the stored quote; a draft that no
  * longer exists (sent or discarded in another tab) is not recreated.
+ *
+ * Without a draft id, the composer key decides: the composer's existing draft
+ * is updated, and once its message has gone out the save is refused (null)
+ * rather than starting a draft that a replayed send would deliver again.
  */
 export async function saveDraft(env: CloudflareEnv, user: SessionUser, input: ComposeInput): Promise<string | null> {
 	const db = getDb(env);
 	const sender = await getAuthorizedSenderAddress(env, { userId: user.id, from: input.from, mailboxId: input.mailboxId });
-	let quote: string | null = null;
-	if (input.draftId) {
-		const existing = await selectDraftWithBody(db, user.id, input.draftId);
-		if (!existing) return null;
-		quote = splitQuotedHtml(existing.htmlBody).quoted;
-	}
-	const html = quote ? `${input.bodyHtml}${wrapQuotedHtml(quote)}` : input.bodyHtml;
-	const text = htmlToMailText(html);
-	const values = {
-		mailboxId: sender.mailboxId,
-		fromAddr: sender.fromAddr,
-		toAddr: normalizeRecipients(input.to),
-		ccAddr: normalizeRecipients(input.cc) || null,
-		bccAddr: normalizeRecipients(input.bcc) || null,
-		subject: input.subject || null,
-		snippet: buildSnippet(text || null, html || null),
-		textBody: text || null,
-		htmlBody: html || null,
+	const valuesFor = (html: string) => {
+		const text = htmlToMailText(html);
+		return {
+			mailboxId: sender.mailboxId,
+			fromAddr: sender.fromAddr,
+			toAddr: normalizeRecipients(input.to),
+			ccAddr: normalizeRecipients(input.cc) || null,
+			bccAddr: normalizeRecipients(input.bcc) || null,
+			subject: input.subject || null,
+			snippet: buildSnippet(text || null, html || null),
+			textBody: text || null,
+			htmlBody: html || null,
+		};
 	};
-	if (input.draftId) {
-		await db.update(messages).set(values).where(and(eq(messages.id, input.draftId), eq(messages.userId, user.id), eq(messages.status, "draft")));
-		return input.draftId;
-	}
-	const id = newId("msg");
-	await db.insert(messages).values({
-		id,
+	const created = () => ({
+		id: newId("msg"),
 		userId: user.id,
-		direction: "outbound",
+		direction: "outbound" as const,
 		status: "draft",
 		read: true,
 		inReplyTo: input.inReplyTo,
 		references: input.references,
 		threadId: input.threadId,
-		...values,
+		composeKey: input.composeKey,
+		...valuesFor(input.bodyHtml),
 	});
-	return id;
+	let draftId = input.draftId;
+	if (!draftId && input.composeKey) {
+		const keyed = await draftForComposeKey(db, user.id, input.composeKey, created());
+		if (keyed.outcome === "sent") return null;
+		if (keyed.outcome === "created") return keyed.id;
+		draftId = keyed.id;
+	}
+	if (!draftId) {
+		const values = created();
+		await db.insert(messages).values(values);
+		return values.id;
+	}
+	const existing = await selectDraftWithBody(db, user.id, draftId);
+	if (!existing) return null;
+	const quote = splitQuotedHtml(existing.htmlBody).quoted;
+	const html = quote ? `${input.bodyHtml}${wrapQuotedHtml(quote)}` : input.bodyHtml;
+	await db.update(messages).set(valuesFor(html)).where(and(eq(messages.id, draftId), eq(messages.userId, user.id), eq(messages.status, "draft")));
+	return draftId;
+}
+
+/**
+ * The draft of one composer, found by its key or created. Insert first, then
+ * look for a sent copy, in that order: sendCompose stores the sent copy
+ * before it deletes the draft, so an insert that succeeds because the draft is
+ * gone always finds the sent copy afterwards. Checking first would let a
+ * replay that checks before the send and inserts after it start a second
+ * draft and send the message again.
+ */
+async function draftForComposeKey(
+	db: AppDatabase,
+	userId: string,
+	composeKey: string,
+	values: typeof messages.$inferInsert & { id: string },
+): Promise<{ outcome: "created" | "existing"; id: string } | { outcome: "sent" }> {
+	// The unique index on (user_id, compose_key) over drafts makes a concurrent second insert a no-op.
+	const [inserted] = await db.insert(messages).values(values).onConflictDoNothing().returning({ id: messages.id });
+	const ofComposer = and(eq(messages.userId, userId), eq(messages.composeKey, composeKey));
+	// A failed send leaves its copy as "failed" and the draft in Drafts, to try again.
+	const [sent] = await db.select({ id: messages.id }).from(messages).where(and(ofComposer, notInArray(messages.status, ["draft", "failed"]))).limit(1);
+	if (sent) {
+		if (inserted) await db.delete(messages).where(eq(messages.id, inserted.id));
+		return { outcome: "sent" };
+	}
+	if (inserted) return { outcome: "created", id: inserted.id };
+	const [draft] = await db.select({ id: messages.id }).from(messages).where(and(ofComposer, eq(messages.status, "draft"))).limit(1);
+	// Gone between the two reads: sent or discarded just now.
+	return draft ? { outcome: "existing", id: draft.id } : { outcome: "sent" };
 }
 
 export async function discardDraft(env: CloudflareEnv, user: SessionUser, draftId: string): Promise<void> {
@@ -214,7 +261,9 @@ export async function createReplyDraft(
  * Send what the composer holds, with the draft's quote and stored attachments.
  * A send that names a draft claims it first, so a second request for the same
  * draft (a replay racing the original) is refused instead of sending again; a
- * failed send gives the claim back and the draft stays in Drafts.
+ * failed send gives the claim back and the draft stays in Drafts. A send that
+ * has only the composer key saves the composer's draft first and claims that,
+ * so it is refused the same way however early it was sent.
  */
 export async function sendCompose(
 	env: CloudflareEnv,
@@ -222,8 +271,13 @@ export async function sendCompose(
 	input: ComposeInput & { uploads: AttachmentContent[]; scheduledAt?: string | null },
 ): Promise<{ messageId: string; scheduled?: boolean }> {
 	const db = getDb(env);
-	const claim = input.draftId ? await claimDraftForSend(db, user.id, input.draftId) : null;
-	const draft = draftForSend(input.draftId, claim);
+	let draftId = input.draftId;
+	if (!draftId && input.composeKey) {
+		draftId = await saveDraft(env, user, input);
+		if (!draftId) throw new DraftGoneError();
+	}
+	const claim = draftId ? await claimDraftForSend(db, user.id, draftId) : null;
+	const draft = draftForSend(draftId, claim);
 	let result: { messageId: string; scheduled?: boolean };
 	try {
 		const quote = draft ? splitQuotedHtml(draft.htmlBody).quoted : null;
@@ -247,11 +301,13 @@ export async function sendCompose(
 			threadId: threading.threadId,
 			attachments: [...stored, ...input.uploads],
 			scheduledAt: input.scheduledAt ?? undefined,
+			composeKey: draft?.composeKey ?? input.composeKey,
 		});
 	} catch (error) {
 		if (claim?.outcome === "claimed") await releaseDraftClaim(db, claim.draft.id, claim.claimedAt);
 		throw error;
 	}
+	// Only now, with the sent copy stored under the composer key, may the draft go (see draftForComposeKey).
 	if (draft) {
 		try {
 			await discardDraft(env, user, draft.id);

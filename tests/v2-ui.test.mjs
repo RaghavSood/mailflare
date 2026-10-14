@@ -468,6 +468,8 @@ test("touch markup: the keyboard resizes the page, the rail names its items, rec
 		assert.match(input, /autocapitalize="off"/);
 		assert.match(input, /enterkeyhint="next"/);
 	}
+	// The composer key is left for app.js to make up per composer: a cached page must not share one.
+	assert.match(composer, /<input type="hidden" name="composeKey" value="" data-compose-key>/);
 
 	const details = String(v2.renderDetails(
 		{ id: "msg_1", direction: "inbound", fromAddr: "a@example.com", toAddr: "me@example.com", ccAddr: null, bccAddr: null, subject: "Hi", deliveredTo: null, createdAt: new Date("2026-10-14T08:00:00Z") },

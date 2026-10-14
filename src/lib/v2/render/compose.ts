@@ -42,7 +42,9 @@ function fromOptions(mailboxes: V2Mailbox[], draft: ComposeDraft): Html {
 /**
  * The composer, used docked (desktop), inline under a conversation, and as a
  * full page (mobile, drafts, new tab). Drafts save in the background; the
- * form itself only submits to send.
+ * form itself only submits to send. app.js fills composeKey for each composer
+ * it sets up: this markup can come from the offline cache, so the server must
+ * not pick the key.
  */
 export function renderComposer(
 	draft: ComposeDraft,
@@ -53,6 +55,7 @@ export function renderComposer(
 	const title = input.title ?? (draft.subject || (draft.inReplyTo ? "Reply" : "New message"));
 	return html`<form class="${cx("composer", `composer-${input.mode}`)}" id="${`composer-${input.key}`}" data-composer data-mode="${input.mode}" method="post" action="/v2/send" enctype="multipart/form-data" autocomplete="off">
 		<input type="hidden" name="draftId" value="${draft.id ?? ""}" data-draft-id>
+		<input type="hidden" name="composeKey" value="" data-compose-key>
 		<input type="hidden" name="inReplyTo" value="${draft.inReplyTo ?? ""}">
 		<input type="hidden" name="references" value="${draft.references ?? ""}">
 		<input type="hidden" name="threadId" value="${draft.threadId ?? ""}">

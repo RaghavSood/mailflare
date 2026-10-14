@@ -23,6 +23,7 @@ export async function claimDraftForSend(db: AppDatabase, userId: string, draftId
 			inReplyTo: messages.inReplyTo,
 			references: messages.references,
 			threadId: messages.threadId,
+			composeKey: messages.composeKey,
 		});
 	if (draft) return { outcome: "claimed", draft, claimedAt: now };
 	const [existing] = await db.select({ id: messages.id }).from(messages).where(owned).limit(1);

@@ -1943,9 +1943,20 @@
 		await updatePending();
 	}
 
+	/**
+	 * Every composer gets its own key, sent with each save and send (composeKey),
+	 * so the server keeps one draft per composer and refuses a replayed send of a
+	 * message that went out before the composer learned its draft id.
+	 */
+	function newComposeKey() {
+		if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+	}
+
 	/** A composer reopened on this device gets back what was typed but never reached the server. */
 	async function restoreDraftFromDevice(form) {
-		form.dataset.clientKey = form.elements.draftId?.value || Offline?.newRequestId() || String(Date.now());
+		form.dataset.clientKey = form.elements.draftId?.value || newComposeKey();
+		if (form.elements.composeKey) form.elements.composeKey.value = form.dataset.clientKey;
 		if (!Offline || !currentUser || !form.elements.draftId?.value) return;
 		let entry;
 		try {

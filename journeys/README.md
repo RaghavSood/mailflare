@@ -16,6 +16,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `10-push-notifications-opt-in` | Notification permission, subscribe and unsubscribe |
 | `11-classic-interface-on-a-phone` | Classic list, reader, drawer, settings tab strip, switching back to v2 |
 | `12-sign-out-clears-offline-copies` | Sign-out clears the per-user cache and outbox |
+| `13-compose-offline-sends-once` | Composer from the offline cache, send queued, delivered exactly once on reconnect with no draft left |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 

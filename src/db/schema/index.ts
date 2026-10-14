@@ -1,5 +1,6 @@
 import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 export const users = sqliteTable("users", {
 	id: text("id").primaryKey(),
@@ -244,6 +245,8 @@ export const messages = sqliteTable(
 		spamAnalysisError: text("spam_analysis_error"),
 		// When a send of this draft started; see claimDraftForSend.
 		sendClaimedAt: integer("send_claimed_at", { mode: "timestamp" }),
+		// The v2 composer that wrote this draft, kept on its sent copy; see saveDraft in src/lib/v2/data/compose.ts.
+		composeKey: text("compose_key"),
 		createdAt: integer("created_at", { mode: "timestamp" })
 			.notNull()
 			.$defaultFn(() => new Date()),
@@ -255,6 +258,8 @@ export const messages = sqliteTable(
 		index("messages_thread_idx").on(t.mailboxId, t.threadId),
 		index("messages_provider_message_idx").on(t.mailboxId, t.providerMessageId),
 		index("messages_raw_r2_key_idx").on(t.rawR2Key),
+		uniqueIndex("messages_compose_key_draft_idx").on(t.userId, t.composeKey).where(sql`${t.composeKey} IS NOT NULL AND ${t.status} = 'draft'`),
+		index("messages_compose_key_idx").on(t.userId, t.composeKey).where(sql`${t.composeKey} IS NOT NULL`),
 	],
 );
 

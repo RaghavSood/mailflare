@@ -28,7 +28,7 @@ await build({
 			export { users, domains, mailboxes, messages } from "./src/db/schema/index.ts";
 			export { claimDraftForSend, releaseDraftClaim } from "./src/lib/email/draft-claim.ts";
 			export { DRAFT_SEND_CLAIM_TTL_MS, staleClaimCutoff, refusedClaimOutcome } from "./src/lib/email/draft-claim-utils.ts";
-			export { sendCompose } from "./src/lib/v2/data/compose.ts";
+			export { saveDraft, sendCompose } from "./src/lib/v2/data/compose.ts";
 			export { DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { eq } from "drizzle-orm";
 		`,
@@ -126,9 +126,10 @@ function envWith(email) {
 
 const SESSION = { id: "usr_a", email: "usr_a@example.test", name: "usr_a", role: "user" };
 
-function composeInput(draftId) {
+function composeInput(draftId, composeKey = null) {
 	return {
 		draftId,
+		composeKey,
 		mailboxId: "mbx_1",
 		from: "a@example.test",
 		to: "someone@example.org",
@@ -241,4 +242,95 @@ test("a failed send gives the draft back, still in Drafts, and the next try send
 	await m.sendCompose(envWith(working.binding), SESSION, composeInput(id));
 	assert.equal(working.sent.length, 1);
 	assert.equal(await row(id), null);
+});
+
+/* ---------- composer key: sends made before the composer knows its draft id ---------- */
+
+const KEY = "3f2b8c1e-0d4a-4c55-9e1f-6a7b8c9d0e1f";
+
+async function draftsOf(composeKey, userId = "usr_a") {
+	return (await db.select().from(m.messages)).filter((item) => item.status === "draft" && item.composeKey === composeKey && item.userId === userId);
+}
+
+test("migration 0038 adds compose_key, unique per user among drafts, that no messages trigger watches", async () => {
+	const { results: columns } = await database.prepare("PRAGMA table_info(messages)").all();
+	const column = columns.find((item) => item.name === "compose_key");
+	assert.ok(column, "column exists");
+	assert.equal(column.notnull, 0);
+	const { results: triggers } = await database.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'messages'").all();
+	for (const trigger of triggers) assert.doesNotMatch(trigger.sql, /compose_key/, trigger.name);
+	const { results: indexes } = await database.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' AND name LIKE 'messages_compose_key%'").all();
+	const unique = indexes.find((item) => item.name === "messages_compose_key_draft_idx");
+	assert.match(unique.sql, /UNIQUE/i);
+	assert.match(unique.sql, /status` = 'draft'/);
+});
+
+test("saves without a draft id but with one composer key keep one draft, even when they race", async () => {
+	const ids = await Promise.all([1, 2, 3].map(() => m.saveDraft(envWith(sendBinding().binding), SESSION, composeInput(null, KEY))));
+	assert.equal(new Set(ids).size, 1, String(ids));
+	const drafts = await draftsOf(KEY);
+	assert.equal(drafts.length, 1);
+	assert.equal(drafts[0].id, ids[0]);
+	// A later save of the same composer (its response was lost, so it still has no id) updates that draft.
+	const later = await m.saveDraft(envWith(sendBinding().binding), SESSION, { ...composeInput(null, KEY), subject: "Changed" });
+	assert.equal(later, ids[0]);
+	assert.equal((await row(later)).subject, "Changed");
+	// The key is the user's own: another user's composer with the same key gets its own draft.
+	assert.equal((await draftsOf(KEY, "usr_b")).length, 0);
+});
+
+test("without a composer key every save without a draft id starts a new draft, as before", async () => {
+	const env = envWith(sendBinding().binding);
+	const first = await m.saveDraft(env, SESSION, composeInput(null));
+	const second = await m.saveDraft(env, SESSION, composeInput(null));
+	assert.notEqual(first, second);
+	assert.equal((await row(first)).composeKey, null);
+});
+
+test("concurrent sends with only a composer key deliver once, and every replay is refused", async () => {
+	const email = sendBinding();
+	const env = envWith(email.binding);
+	const all = Promise.allSettled([1, 2, 3].map(() => m.sendCompose(env, SESSION, composeInput(null, KEY))));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	email.open();
+	const results = await all;
+	assert.equal(results.filter((result) => result.status === "fulfilled").length, 1, "exactly one request sends");
+	for (const result of results.filter((item) => item.status === "rejected")) {
+		assert.ok(result.reason instanceof m.DraftSendingError || result.reason instanceof m.DraftGoneError, String(result.reason));
+	}
+	assert.equal(email.sent.length, 1);
+	const rows = await outbound();
+	assert.deepEqual(rows.map((item) => [item.status, item.composeKey]), [["sent", KEY]], "the sent copy keeps the key");
+	assert.equal((await draftsOf(KEY)).length, 0, "the draft is gone once sent");
+	// The outbox replay of a send whose response was lost: its draft save is refused (410), and so is the send.
+	assert.equal(await m.saveDraft(env, SESSION, composeInput(null, KEY)), null);
+	assert.equal((await draftsOf(KEY)).length, 0, "the refused save leaves no draft behind");
+	await assert.rejects(m.sendCompose(env, SESSION, composeInput(null, KEY)), m.DraftGoneError);
+	assert.equal(email.sent.length, 1);
+});
+
+test("a send named by draft id carries the draft's composer key to the sent copy", async () => {
+	const email = sendBinding();
+	email.open();
+	const env = envWith(email.binding);
+	const id = await m.saveDraft(env, SESSION, composeInput(null, KEY));
+	await m.sendCompose(env, SESSION, composeInput(id, "a-reopened-composer"));
+	assert.deepEqual((await outbound()).map((item) => item.composeKey), [KEY]);
+	// A device copy of the first composer that never learned the id is refused, not saved as a new draft.
+	assert.equal(await m.saveDraft(env, SESSION, composeInput(null, KEY)), null);
+});
+
+test("a failed send with only a composer key leaves the draft to try again, and the retry sends it once", async () => {
+	const failing = sendBinding({ fail: true });
+	failing.open();
+	await assert.rejects(m.sendCompose(envWith(failing.binding), SESSION, composeInput(null, KEY)), /Sending is unavailable/);
+	const [kept] = await draftsOf(KEY);
+	assert.ok(kept, "the draft stays in Drafts");
+	assert.equal(kept.sendClaimedAt, null);
+	const working = sendBinding();
+	working.open();
+	await m.sendCompose(envWith(working.binding), SESSION, composeInput(null, KEY));
+	assert.equal(working.sent.length, 1);
+	assert.deepEqual((await outbound()).map((item) => item.status).sort(), ["failed", "sent"]);
+	assert.equal(await row(kept.id), null);
 });

@@ -318,8 +318,10 @@ function composeInputFrom(form: FormData, ctx: V2Context): ComposeInput | { erro
 	if (!from) return { error: "Choose who the message is from." };
 	if (!ctx.mailboxes.some((mailbox) => mailbox.id === from.mailboxId && mailbox.canSend)) return { error: "You can't send from that mailbox." };
 	const draftId = String(form.get("draftId") ?? "");
+	const composeKey = String(form.get("composeKey") ?? "");
 	return {
 		draftId: ID.test(draftId) ? draftId : null,
+		composeKey: ID.test(composeKey) ? composeKey : null,
 		mailboxId: from.mailboxId,
 		from: from.address,
 		to: String(form.get("to") ?? ""),

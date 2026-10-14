@@ -33,6 +33,8 @@ export type SendEmailInput = {
 	attachments?: AttachmentContent[];
 	/** Future delivery time. Values at or before the current time send immediately. */
 	scheduledAt?: string | Date;
+	/** The v2 composer this message came from, kept on the stored copy so a replayed send is refused. */
+	composeKey?: string | null;
 };
 
 const MAX_RECIPIENTS = 50;
@@ -117,6 +119,7 @@ export async function sendEmail(
 		threadId: input.threadId ?? null,
 		inReplyTo,
 		references: references.length ? references.join(" ") : null,
+		composeKey: input.composeKey ?? null,
 	});
 	try {
 		await storeMessageAttachments(env, messageId, attachments);

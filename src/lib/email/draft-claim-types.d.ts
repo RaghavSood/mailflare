@@ -7,6 +7,7 @@ export type ClaimedDraft = {
 	inReplyTo: string | null;
 	references: string | null;
 	threadId: string | null;
+	composeKey: string | null;
 };
 
 export type DraftClaim =
