@@ -146,10 +146,17 @@ function cachedPaths(worker, name) {
 	return [...(worker.stores.get(name)?.entries.keys() ?? [])].map((url) => new URL(url).pathname + new URL(url).search);
 }
 
-async function message(worker, data) {
+async function message(worker, data, ports = []) {
 	let done;
-	worker.listeners.message({ data, waitUntil: (promise) => { done = promise; } });
+	worker.listeners.message({ data, ports, waitUntil: (promise) => { done = promise; } });
 	await done;
+}
+
+/** Posts a message with a reply port, as app.js does, and returns what the worker answered on it. */
+async function ask(worker, data) {
+	const answers = [];
+	await message(worker, data, [{ postMessage: (answer) => answers.push(answer) }]);
+	return answers;
 }
 
 test("the worker precaches the versioned v2 assets named in its own URL", async () => {
@@ -207,7 +214,7 @@ test("the offline page is served as a fresh response even when its precached cop
 });
 
 test("a signed-in page is cached for its user and served, marked with its age, when the network fails", async () => {
-	const worker = await installed({ respond: (request) => served(doc("usr_a", new URL(request.url).pathname)) });
+	const worker = await installed({ respond: (request) => served(doc("usr_a", new URL(request.url ?? request).pathname)) });
 	const live = await dispatchFetch(worker, "/v2/inbox");
 	assert.match(await live.text(), /data-user="usr_a"><main id="main">\/v2\/inbox/);
 	await worker.idle();
@@ -268,6 +275,24 @@ test("boosted pages handed over by the page are stored only for the user they na
 
 	worker.network.online = false;
 	assert.match(await (await dispatchFetch(worker, "/v2/archive")).text(), /data-cached-at=.*archive<\/main>/);
+});
+
+test("warming the composer answers true only once the page is stored, so the page can ask again otherwise", async () => {
+	const worker = await installed({ respond: (request) => served(doc("usr_a", new URL(request.url ?? request).pathname)) });
+	assert.deepEqual(await ask(worker, { type: "warm", url: "/v2/compose" }), [true]);
+	assert.deepEqual(cachedPaths(worker, "mf-user-usr_a"), ["/v2/compose"]);
+	worker.network.online = false;
+	assert.match(await (await dispatchFetch(worker, "/v2/compose")).text(), /data-cached-at=.*\/v2\/compose<\/main>/);
+
+	const signedOut = await installed({ respond: () => served("", { redirected: true }) });
+	assert.deepEqual(await ask(signedOut, { type: "warm", url: "/v2/compose" }), [false], "a redirect to sign-in is not stored");
+	const offline = await installed({ online: false });
+	assert.deepEqual(await ask(offline, { type: "warm", url: "/v2/compose" }), [false], "a failed fetch answers too");
+	const noUser = await installed({ respond: () => served("<!doctype html><body>no user</body>") });
+	assert.deepEqual(await ask(noUser, { type: "warm", url: "/v2/compose" }), [false], "a page naming no user is not stored");
+	assert.deepEqual(await ask(worker, { type: "warm", url: "/v2/act" }), [false], "only pages are warmed");
+	assert.deepEqual(await ask(worker, { type: "warm", url: "https://evil.example/v2/compose" }), [false]);
+	await message(worker, { type: "warm", url: "/v2/compose" });
 });
 
 test("mail bodies are cached for the user named in their response and served offline", async () => {

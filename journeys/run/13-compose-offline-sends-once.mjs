@@ -52,20 +52,13 @@ const journey = {
 			await device.goto(`${APP}/v2/inbox`);
 		}
 		await device.ensureServiceWorker();
-		// Offline, the compose button opens the full-page composer from the cache. app.js asks the worker to
-		// store it once per tab session, and that request is lost when the first page is reloaded before the
-		// worker is ready (as ensureServiceWorker does): ask again the way a new session would.
+		// Offline, the compose button opens the full-page composer from the cache: app.js has the worker store it.
 		const composerStored = async () => {
 			for (const name of await caches.keys()) {
 				if (name.startsWith("mf-user-") && (await (await caches.open(name)).match(new URL("/v2/compose", location.href).href, { ignoreVary: true }))) return true;
 			}
 			return false;
 		};
-		if (!(await device.eval(composerStored))) {
-			const inbox = await device.page();
-			await inbox.evaluate(() => sessionStorage.removeItem("mf_compose_warm"));
-			await inbox.reload({ waitUntil: "load" });
-		}
 		await device.until(composerStored, null, { timeout: 15_000, message: "the full-page composer to be stored for offline use" });
 		expect((await device.eval(outboxSize)) === 0, "the outbox is not empty at the start");
 	},

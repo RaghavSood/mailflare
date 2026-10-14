@@ -49,6 +49,24 @@ const journey = {
 				expect(open, "the on-screen keyboard is not open");
 			},
 		],
+		['Tap the "Send" button without adding a recipient', ({ device }) => device.tap("[data-cmp-send]", { effect: () => [...document.querySelectorAll("#toast .toast")].some((t) => window.__j.text(t).includes("Add at least one recipient.")), effectTimeout: 5_000 })],
+		[
+			'Verify that a message reading "Add at least one recipient." appears, that the on-screen keyboard is open, and that the cursor is in the "To" field',
+			async ({ device }) => {
+				await device.see("Add at least one recipient.", { selector: "#toast .toast" });
+				// On touch screens the "To" field is the chip input; the field's name sits on a hidden input.
+				const focused = await device.until(() => {
+					const el = document.activeElement;
+					return el?.matches?.('form[data-composer] input[id^="to-"]') && window.__j.visible(el) ? el.id : null;
+				}, null, { timeout: 3_000, message: 'the cursor to be in the "To" field' }).catch(async (error) => {
+					const el = await device.eval(() => { const a = document.activeElement; return a ? `${a.tagName.toLowerCase()}${a.id ? `#${a.id}` : ""}${a.type ? `[type=${a.type}]` : ""}` : "nothing"; });
+					throw new Error(`${error.message}; focus is on ${el}`);
+				});
+				expect(focused, "nothing is focused");
+				const open = await device.keyboardShown() || (await sleep(1500), await device.keyboardShown());
+				expect(open, "the on-screen keyboard is not open");
+			},
+		],
 		[
 			'Type "maya" into the "To" field',
 			async ({ device }) => {

@@ -278,13 +278,13 @@ async function storeMail(url, kind, response) {
 	await putTrimmed(cache, url.href, new Response(body, { status: 200, headers }), kind);
 }
 
-/** Fetch a page the user has not opened yet (the full-page composer) and keep it. */
+/** Fetch a page the user has not opened yet (the full-page composer) and keep it; true once it is stored. */
 async function warmPage(href) {
 	const url = new URL(href, self.location.origin);
-	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "page") return;
+	if (url.origin !== self.location.origin || Offline.cacheKind(url) !== "page") return false;
 	const response = await fetch(url.href, { credentials: "same-origin", headers: { Accept: "text/html" } });
-	if (response.status !== 200 || response.redirected) return;
-	await storeDocument(url.href, await response.text(), response.headers);
+	if (response.status !== 200 || response.redirected) return false;
+	return storeDocument(url.href, await response.text(), response.headers);
 }
 
 /**
@@ -305,8 +305,11 @@ self.addEventListener("message", (event) => {
 	const data = event.data;
 	if (!data || typeof data !== "object" || typeof data.url !== "string") return;
 	if (data.type === "store-page" && typeof data.html === "string") event.waitUntil(storeDocument(data.url, data.html, null).catch(() => false));
-	else if (data.type === "warm") event.waitUntil(warmPage(data.url).catch(() => {}));
-	else if (data.type === "keep-file") event.waitUntil(keepFile(data.url).catch(() => {}));
+	else if (data.type === "warm") {
+		// The page sets its "already warmed" flag only on this answer.
+		const reply = event.ports[0];
+		event.waitUntil(warmPage(data.url).catch(() => false).then((stored) => reply?.postMessage(stored)));
+	} else if (data.type === "keep-file") event.waitUntil(keepFile(data.url).catch(() => {}));
 });
 
 /* ---------- queued actions ----------

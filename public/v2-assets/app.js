@@ -972,6 +972,8 @@
 		suggest.hidden = true;
 		input.before(chips);
 		input.after(hidden);
+		// What to focus when the field needs attention (Send with no recipient).
+		hidden.recipientInput = input;
 		field?.append(suggest);
 		const removeGlyph = $("[data-cmp-close] svg", form);
 		const addresses = splitRecipients(`${input.value},`).done;
@@ -1284,7 +1286,7 @@
 				event.preventDefault();
 				event.stopImmediatePropagation();
 				toast("Add at least one recipient.");
-				form.elements.to.focus();
+				(form.elements.to.recipientInput ?? form.elements.to).focus();
 				return;
 			}
 			if (form.dataset.mode === "dock") form.elements.return.value = `${location.pathname}${location.search}`;
@@ -2517,6 +2519,34 @@
 		updateConnectivity();
 	});
 
+	/**
+	 * Keep the full-page composer so mail can be written offline, once per tab
+	 * session. The flag is set only when the worker says it stored the page, so a
+	 * page left before then (the first load, while the worker is still
+	 * installing) asks again on the next load.
+	 */
+	function warmComposer() {
+		try {
+			if (sessionStorage.getItem("mf_compose_warm")) return;
+		} catch {
+			return;
+		}
+		navigator.serviceWorker?.ready.then((registration) => {
+			if (!registration.active) return;
+			const channel = new MessageChannel();
+			channel.port1.onmessage = (event) => {
+				channel.port1.close();
+				if (event.data !== true) return;
+				try {
+					sessionStorage.setItem("mf_compose_warm", "1");
+				} catch {
+					/* sessionStorage unavailable */
+				}
+			};
+			registration.active.postMessage({ type: "warm", url: "/v2/compose" }, [channel.port2]);
+		}).catch(() => {});
+	}
+
 	updateConnectivity();
 	showFlash();
 	if (Offline && currentUser) {
@@ -2528,15 +2558,7 @@
 			await drainOutbox();
 			// Served from the cache although the browser is online: the server is out of reach.
 			refreshCachedPage();
-			// Keep the full-page composer so mail can be written offline.
-			try {
-				if (!sessionStorage.getItem("mf_compose_warm")) {
-					sessionStorage.setItem("mf_compose_warm", "1");
-					navigator.serviceWorker?.ready.then((registration) => registration.active?.postMessage({ type: "warm", url: "/v2/compose" }));
-				}
-			} catch {
-				/* sessionStorage unavailable */
-			}
+			warmComposer();
 		});
 	}
 })();

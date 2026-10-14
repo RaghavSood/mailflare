@@ -10,13 +10,13 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `04-read-conversation-and-sheets` | Conversation view, details and ⋮ bottom sheets, Back closes either sheet and then leaves the conversation |
 | `05-swipe-to-trash-undo-and-archive` | Row swipes, Undo, Archive |
 | `06-pull-to-refresh` | In-app pull to refresh, no full reload |
-| `07-compose-and-send` | Composer with the on-screen keyboard, contact suggestion chips, send |
+| `07-compose-and-send` | Composer with the on-screen keyboard, Send with no recipient returns the keyboard to the To chips, contact suggestion chips, send |
 | `08-read-offline` | Offline banner, cached list and conversation, recovery after reconnect |
 | `09-queue-actions-offline` | Outbox: action queued offline, replayed on reconnect |
 | `10-push-notifications-opt-in` | Notification permission, subscribe and unsubscribe |
 | `11-classic-interface-on-a-phone` | Classic list, reader, drawer, settings tab strip, switching back to v2 |
 | `12-sign-out-clears-offline-copies` | Sign-out clears the per-user cache and outbox |
-| `13-compose-offline-sends-once` | Composer from the offline cache, send queued, delivered exactly once on reconnect with no draft left |
+| `13-compose-offline-sends-once` | Composer from the offline cache (stored ahead by the warm-up, never opened online), send queued, delivered exactly once on reconnect with no draft left |
 | `14-saved-copy-recovers-when-the-server-returns` | Server out of reach while the device is online: saved copy, "Couldn't reach Mailflare", recovery |
 | `15-discard-offline-draft` | Drafts discarded offline (one only on the device, one the server had) stay gone on reconnect |
 
