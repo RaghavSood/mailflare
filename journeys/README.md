@@ -24,6 +24,8 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `18-send-from-a-draft` | A draft opened from Drafts and sent: the address moves to the Drafts list, pull to refresh shows that list (not "Not found"), the message is in Sent |
 | `19-refused-list-action` | A list action the server refuses (Archive on a conversation moved to Trash meanwhile, picked by tapping its avatar): the list reloads and the server's reason stays shown (#38) |
 | `20-replay-after-a-slow-reconnect` | Outbox: Airplane mode turned off while the server is not reachable yet (the runner's relay keeps refusing it), the first replay fails, the page retries with backoff and the action lands once the server answers, with no reload (#42) |
+| `23-undo-survives-new-mail` | New mail arriving over the realtime connection (delivered by the runner while the inbox is on screen) reloads the list in place and keeps the "Conversation archived." message with its Undo; Undo brings the conversation back (#48) |
+| `24-discard-offline-reply` | A reply the server has saved, discarded offline: the reply closes, its buttons come back and "Draft discarded." stays (the reload that closing it starts fails offline and must say nothing, #44); the discard replays on reconnect |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 

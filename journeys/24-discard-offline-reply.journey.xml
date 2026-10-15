@@ -1,0 +1,25 @@
+<journey name="Discard a saved reply while offline">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with a newly delivered conversation at the top of the list and no draft replying to it.
+		Discarding a reply the server already has, while offline, must close the reply, put the reply buttons back and say "Draft discarded.": closing a reply reloads the conversation, which cannot happen offline, and that failed reload must not replace the confirmation with "You appear to be offline." (#44). The discard is queued and removes the draft once the connection returns.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Verify that the conversation opens with "Reply", "Reply all" and "Forward" buttons below the message</action>
+		<action>Tap "Reply"</action>
+		<action>Tap the message body of the reply and type "Offline reply"</action>
+		<action>Verify that the reply reads "Saved" within a few seconds</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings</action>
+		<action>Verify that the trash can button is visible on the screen and not covered by the keyboard; hide the keyboard with the Back button if it is covered</action>
+		<action>Tap the trash can button to discard the reply</action>
+		<action>Verify that the reply closes, the "Reply", "Reply all" and "Forward" buttons are shown again, and "Draft discarded." appears near the bottom of the screen</action>
+		<action>Wait 3 seconds</action>
+		<action>Verify that "Draft discarded." is still shown and the banner at the top reads "Offline" followed by "1 change waiting"</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 15 seconds</action>
+		<action>Verify that the banner is gone</action>
+		<action>Tap the menu button at the top left of the screen and tap "Drafts" in the drawer</action>
+		<action>Verify that no draft replying to that conversation is listed in Drafts</action>
+	</actions>
+</journey>

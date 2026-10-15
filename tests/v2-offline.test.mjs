@@ -164,6 +164,21 @@ test("a page drains again, backing off, only while online with the server out of
 	assert.equal(next(null), null, "the drain itself failed");
 });
 
+test("a request that cannot reach the server queues, navigates, says so, or (made by the page itself) says nothing", () => {
+	const failure = (request) => Offline.sendFailure(request);
+	assert.equal(failure({ verb: "get", boosted: true }), "navigate", "a boosted page: the worker answers from its cache");
+	assert.equal(failure({ verb: "get", boosted: true, sameOrigin: false }), "toast", "another site's page");
+	assert.equal(failure({ verb: "post", kind: "act" }), "act", "a forward action goes to the outbox");
+	assert.equal(failure({ verb: "post", kind: "send" }), "send", "a send goes to the outbox");
+	assert.equal(failure({ verb: "post", kind: "draft" }), "toast", "drafts are saved without htmx");
+	assert.equal(failure({ verb: "post", kind: null }), "toast", "undo, and actions that cannot be queued");
+	assert.equal(failure({ verb: "get" }), "toast", "a page the person asked for, such as pull to refresh or a new composer");
+	// #44: a quiet reload, a list refill, #nav's poll or the reload after a composer closes must not
+	// replace the confirmation on screen ("Draft discarded.") with "You appear to be offline.".
+	assert.equal(failure({ verb: "get", background: true }), "silent");
+	assert.equal(failure({ verb: "get", boosted: false, background: true, kind: null }), "silent");
+});
+
 /** An in-memory outbox and a scripted server. */
 function harness(entries, routes) {
 	const store = new Map(entries.map((entry) => [entry.id, structuredClone(entry)]));

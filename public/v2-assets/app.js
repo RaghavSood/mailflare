@@ -54,14 +54,20 @@
 	}
 
 	let toastTimer = 0;
+	/** The toast the timer runs for: a reload that keeps it on screen does not start its time again. */
+	let timedToast = null;
 	function scheduleToastHide() {
-		clearTimeout(toastTimer);
 		const region = $("#toast");
-		if (!region || !region.querySelector(".toast")) return;
+		const shown = region?.querySelector(".toast");
+		if (!shown || shown === timedToast) return;
+		clearTimeout(toastTimer);
+		timedToast = shown;
 		region.classList.remove("is-leaving");
 		toastTimer = setTimeout(() => {
 			region.classList.add("is-leaving");
 			setTimeout(() => {
+				// A new toast took its place while it was leaving.
+				if (region.querySelector(".toast") !== shown) return;
 				region.innerHTML = "";
 				region.classList.remove("has-toast", "is-leaving");
 			}, 220);
@@ -83,6 +89,21 @@
 		return window.htmx.ajax(verb, path, { target: "#main", select: "#main", swap: "outerHTML", values, source: body, ...options });
 	}
 
+	/** Requests the page makes on its own carry this header: if they cannot reach the server, they say nothing (#44). */
+	const BACKGROUND_HEADER = "X-Mailflare-Background";
+	const BACKGROUND = { [BACKGROUND_HEADER]: "1" };
+	const isBackground = (config) => config?.headers?.[BACKGROUND_HEADER] === "1";
+
+	/**
+	 * Reload the page shown. The reload leaves #toast alone: a page fetched with GET never
+	 * carries a toast, so the one on screen (a confirmation, an Undo) stays (#48), and a
+	 * reload queued behind the request still in flight resolves at once, before it has even
+	 * been sent (#38).
+	 */
+	function reload({ background = false } = {}) {
+		return load("GET", `${location.pathname}${location.search}`, undefined, background ? { selectOOB: "#nav", headers: BACKGROUND } : { selectOOB: "#nav" });
+	}
+
 	function navigate(href) {
 		if (!href) return;
 		const link = document.createElement("a");
@@ -102,8 +123,8 @@
 	});
 	document.addEventListener("htmx:afterRequest", () => body.classList.remove("is-loading"));
 	document.addEventListener("htmx:responseError", (event) => {
-		// A cached copy's quiet reload retries on its own.
-		if (isQuiet(event.detail.requestConfig)) return;
+		// A cached copy's quiet reload retries on its own; the page's other background requests are only refreshes.
+		if (isQuiet(event.detail.requestConfig) || isBackground(event.detail.requestConfig)) return;
 		const raw = event.detail.xhr?.responseText || "Something went wrong.";
 		const text = raw.length > 200 ? "Something went wrong." : raw;
 		// A refused list action already changed the rows; reload them.
@@ -280,7 +301,7 @@
 			.ajax("POST", "/v2/act", { target: "#toast", select: "#toast", swap: "outerHTML", values: data, source: body })
 			.then(() => {
 				// Refill a page that has emptied out.
-				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh({ keepToast: true });
+				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh({ background: true });
 			}, () => {
 				/* Unreachable: htmx:sendError queued it or said so. */
 			});
@@ -1173,11 +1194,29 @@
 			form.dataset.closed = "1";
 			const mode = form.dataset.mode;
 			if (mode === "dock") form.remove();
-			else if (mode === "inline") load("GET", `${location.pathname}${location.search}`);
+			else if (mode === "inline") reload({ background: true }).catch(() => restoreReplySlot(form));
 			else navigate(form.elements.return?.value || "/v2/inbox");
 		};
 		if (save) saveDraft(form).finally(finish);
 		else finish();
+	}
+
+	/** The reply buttons a reply composer took the place of, kept for when closing it cannot reload the conversation. */
+	let replyButtons = null;
+	document.addEventListener("htmx:beforeSwap", (event) => {
+		const slot = event.detail.target;
+		if (slot?.id !== "reply-slot" || slot.querySelector("[data-composer]")) return;
+		// Without htmx's state: the reply form is the request in flight right now.
+		const copy = slot.cloneNode(true);
+		for (const el of [copy, ...copy.querySelectorAll("[class*='htmx-']")]) el.classList.remove(...[...el.classList].filter((name) => name.startsWith("htmx-")));
+		replyButtons = { path: location.pathname, html: copy.outerHTML };
+	});
+	function restoreReplySlot(form) {
+		const slot = form.closest("#reply-slot");
+		if (!slot) return form.remove();
+		if (replyButtons?.path !== location.pathname) return slot.replaceChildren();
+		slot.outerHTML = replyButtons.html;
+		window.htmx.process($("#reply-slot"));
 	}
 
 	function exec(command, value) {
@@ -1446,19 +1485,18 @@
 	}
 
 	/**
-	 * Reload the page shown. With keepToast the reload leaves #toast alone, so a toast shown
-	 * just before it survives: the page's own #toast is empty, and a reload queued behind the
-	 * request still in flight resolves at once, before it has even been sent (#38).
+	 * Reload the page shown, keeping the toast (see reload). Pull to refresh keeps it too: the
+	 * person asked for newer rows, not to lose an Undo, and the reload has no toast of its own.
 	 */
-	function refresh({ keepToast = false } = {}) {
+	function refresh({ background = false } = {}) {
 		if (!navigator.onLine) return Promise.resolve();
-		return load("GET", `${location.pathname}${location.search}`, undefined, keepToast ? { selectOOB: "#nav" } : undefined);
+		return reload({ background });
 	}
 
 	/** The server refused something the page already showed as done: say why, and reload to show the truth. */
 	function explainRefusal(message) {
 		toast(message);
-		return refresh({ keepToast: true });
+		return refresh({ background: true });
 	}
 
 	function undo() {
@@ -1710,13 +1748,15 @@
 		// Replayed actions must reach the server before the list is reloaded.
 		if (deferRefreshUntilDrained()) return;
 		if (body.dataset.cachedAt) return refreshCachedPage();
+		// It could only fail; coming back online reloads.
+		if (!navigator.onLine) return;
 		const kind = pageKind();
 		const busy = selectedIds().length || $("details.menu[open]") || isTyping(document.activeElement);
 		const path = `${location.pathname}${location.search}`;
 		if (kind === "list" && !busy) {
-			load("GET", path);
+			reload({ background: true });
 		} else {
-			window.htmx.ajax("GET", `/v2/poll?path=${encodeURIComponent(path)}`, { target: "#nav", select: "#nav", swap: "outerHTML", source: body });
+			window.htmx.ajax("GET", `/v2/poll?path=${encodeURIComponent(path)}`, { target: "#nav", select: "#nav", selectOOB: "#nav", swap: "outerHTML", source: body, headers: BACKGROUND });
 		}
 	}
 
@@ -2089,24 +2129,27 @@
 	}
 
 	/**
-	 * htmx could not reach the server. A forward action, draft or send goes to
-	 * the outbox (the rows already changed); a boosted page becomes a full
-	 * navigation the service worker can answer from its cache.
+	 * htmx could not reach the server (Offline.sendFailure decides what follows).
+	 * A forward action or send goes to the outbox (the rows already changed); a
+	 * boosted page becomes a full navigation the service worker can answer from
+	 * its cache; a background request says nothing. False: say it failed.
 	 */
 	function handleOfflineFailure(detail) {
 		const config = detail.requestConfig;
 		if (!config) return false;
 		const url = new URL(config.path, location.href);
-		if (config.verb === "get" && config.boosted && url.origin === location.origin) {
+		const fields = config.verb === "post" ? fieldsOf(config.formData) : [];
+		const outcome = Offline
+			? Offline.sendFailure({ verb: config.verb, boosted: config.boosted, sameOrigin: url.origin === location.origin, background: isBackground(config), kind: Offline.queueKind(url.pathname, fields) })
+			: isBackground(config) ? "silent" : "toast";
+		if (outcome === "silent") return true;
+		if (outcome === "navigate") {
 			location.href = url.href;
 			return true;
 		}
-		if (!Offline || config.verb !== "post") return false;
-		const fields = fieldsOf(config.formData);
-		const kind = Offline.queueKind(url.pathname, fields);
-		if (!kind || kind === "draft") return false;
+		if (outcome !== "send" && outcome !== "act") return false;
 		const value = (name) => Offline.fieldValue(fields, name);
-		if (kind === "send") {
+		if (outcome === "send") {
 			const form = config.elt?.closest?.("[data-composer]");
 			if (form) {
 				form.dataset.closed = "1";
@@ -2381,11 +2424,11 @@
 		if (held) {
 			// Learn whether the server is back, and bring #nav up to date, without touching #main.
 			quiet = { path: `/v2/poll?path=${encodeURIComponent(path)}`, status: 0 };
-			request = window.htmx.ajax("GET", quiet.path, { target: "#nav", select: "#nav", swap: "outerHTML", source: body });
+			request = window.htmx.ajax("GET", quiet.path, { target: "#nav", select: "#nav", selectOOB: "#nav", swap: "outerHTML", source: body });
 		} else {
 			quiet = { path, status: 0 };
 			placeToRestore = rememberPlace();
-			request = load("GET", path);
+			request = reload();
 		}
 		const sent = quiet;
 		const settle = (status) => {

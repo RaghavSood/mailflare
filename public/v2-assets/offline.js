@@ -101,6 +101,22 @@
 		return retryDelay(attempt);
 	}
 
+	/**
+	 * What the page does when htmx cannot reach the server (#44): "navigate" (a
+	 * boosted page becomes a full navigation the worker can answer from its
+	 * cache), "send" or "act" (it goes to the outbox; the page already shows it
+	 * done), "silent" (a request the page made on its own, such as a quiet reload
+	 * or refilling a list: the banner already says why, and the page reloads once
+	 * the server answers, so it must not replace a confirmation on screen) or
+	 * "toast" (anything else the person asked for says it could not be done).
+	 */
+	function sendFailure({ verb, boosted = false, sameOrigin = true, background = false, kind = null }) {
+		if (background) return "silent";
+		if (verb === "get" && boosted && sameOrigin) return "navigate";
+		if (verb === "post" && (kind === "send" || kind === "act")) return kind;
+		return "toast";
+	}
+
 	/* ---------- what may be queued ---------- */
 
 	/** Forward actions only: undo depends on server state and never queues. */
@@ -446,6 +462,7 @@
 		bannerText,
 		retryDelay,
 		drainRetryDelay,
+		sendFailure,
 		queueKind,
 		resolveSnoozePreset,
 		prepareFields,
