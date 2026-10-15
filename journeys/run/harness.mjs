@@ -392,6 +392,37 @@ export class Device {
 		});
 	}
 
+	/**
+	 * Starts Chrome on the setup page and connects DevTools, as a run starts. `fresh` clears its profile
+	 * first: one tab, no site data, the notification permission back at "Ask".
+	 */
+	async startChrome({ fresh = false } = {}) {
+		await this.detach();
+		if (fresh) {
+			await this.shell("am force-stop com.android.chrome");
+			await this.shell("pm clear com.android.chrome");
+			await this.shell("pm grant com.android.chrome android.permission.POST_NOTIFICATIONS");
+		}
+		await this.shell("am set-debug-app --persistent com.android.chrome");
+		await this.shell(`echo "chrome --disable-fre --no-default-browser-check --no-first-run --disable-signin-promo" > /data/local/tmp/chrome-command-line`);
+		await this.shell(`am start -a android.intent.action.VIEW -d '${BLANK}' com.android.chrome`);
+		await this.connect();
+		await this.page({ timeout: 30_000 });
+		return this.singleTab();
+	}
+
+	/**
+	 * Drops the DevTools connection; Chrome keeps running (closing a connectOverCDP browser only closes
+	 * its socket). Playwright turns on focus emulation in every page it attaches to, which keeps the page
+	 * "visible" even behind the home screen, so a journey that needs it really hidden detaches first.
+	 * The next page() connects again.
+	 */
+	async detach() {
+		const browser = this.browser;
+		this.browser = null;
+		await browser?.close().catch(() => {});
+	}
+
 	pages() {
 		return this.browser ? this.browser.contexts().flatMap((c) => c.pages()) : [];
 	}

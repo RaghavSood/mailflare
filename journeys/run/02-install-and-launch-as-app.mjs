@@ -1,51 +1,5 @@
 import { BLANK, expect, fail, sleep, waitFor } from "./harness.mjs";
-
-const chrome = (n) => n.pkg === "com.android.chrome";
-const launcher = (n) => /launcher/.test(n.pkg);
-const homeIcon = (n) => launcher(n) && n.clickable && /^Mailflare$/.test(n.desc || n.text);
-
-/** What the launcher shows now (one home screen page, or the app drawer), top to bottom. */
-const launcherNodes = async (device) => (await device.nativeNodes()).filter((n) => launcher(n) && n.bounds);
-const labelsOf = (nodes) => nodes.filter((n) => n.desc || n.text).map((n) => n.desc || n.text);
-
-/**
- * Where the launcher put Chrome's new shortcut: the home screen page index it logged when it placed it
- * (null until then). Accepting the pin only queues the shortcut; the launcher places it when it next
- * comes to the front, on the first page with room (page 1 on the CI image, beside "At a glance").
- */
-async function placedOnPage(device, since) {
-	const log = await device.shell(`logcat -d -v epoch -T ${since}.000 -s AddWorkspaceItemsTask:D 2>/dev/null`);
-	const placed = [...log.matchAll(/targetComponent=ComponentInfo\{com\.android\.chrome\/[^}]*\} screen=(\d+)/g)].at(-1);
-	return placed ? Number(placed[1]) : null;
-}
-
-/**
- * Shows home screen page `index`: Home (from the home screen it goes back to the first page), then one
- * swipe left per page. A swipe the launcher drops (it ignores touches while it settles) leaves the same
- * page on screen, so each swipe is checked and made again until the page changes. Returns its labels.
- */
-async function showHomePage(device, index) {
-	await device.home();
-	await sleep(400);
-	await device.home();
-	let nodes = await waitFor(async () => {
-		const now = await launcherNodes(device);
-		return labelsOf(now).length ? now : null;
-	}, { timeout: 10_000, message: "the launcher's home screen" });
-	for (let page = 0; page < index; page++) {
-		let moved = null;
-		for (let swipe = 1; swipe <= 3 && !moved; swipe++) {
-			await device.swipeScreen(device.width * 0.85, device.height * 0.5, device.width * 0.15, device.height * 0.5, 300);
-			moved = await waitFor(async () => {
-				const now = await launcherNodes(device);
-				return labelsOf(now).length && labelsOf(now).join("|") !== labelsOf(nodes).join("|") ? now : null;
-			}, { timeout: 3_000, interval: 300, message: `home screen page ${page + 2}` }).catch(() => null);
-		}
-		if (!moved) return { nodes, reached: page };
-		nodes = moved;
-	}
-	return { nodes, reached: index };
-}
+import { chrome, deviceNow, homeIcon, labelsOf, launcher, launcherNodes, placedOnPage, showHomePage } from "./installed-app.mjs";
 
 const journey = {
 	async setup({ device }) {
@@ -94,7 +48,7 @@ const journey = {
 			'Tap "Install" (or "Add") in that dialog, and tap "Add" or "Add automatically" if a second confirmation appears',
 			async ({ device, state }) => {
 				// The launcher's log from here on says where it places the shortcut (see placedOnPage).
-				state.since = Number((await device.shell("date +%s")).trim()) - 2;
+				state.since = await deviceNow(device);
 				await device.tapNative((n) => chrome(n) && /positive_button$/.test(n.id), { message: 'the "Install" button' });
 				// The launcher asks to confirm the new shortcut; on a slow emulator that can take a while to appear.
 				const isConfirm = (n) => launcher(n) && n.clickable && /^(Add|Add automatically|Add to home screen)$/i.test(n.text);

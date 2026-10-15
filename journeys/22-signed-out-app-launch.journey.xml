@@ -1,0 +1,19 @@
+<journey name="Launch the installed app while signed out">
+	<description>
+		Start: Mailflare is installed as an app (journey 02) with its icon on the home screen, and the v2 inbox is open in Chrome, signed in.
+		The installed app starts at /v2/inbox. Signed out, that shows the sign-in page, and signing in must bring the app back to the v2 inbox (the mf_ui cookie remembers v2), still in the app window.
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen and tap "Switch to classic" at the bottom of the drawer</action>
+		<action>Tap the round account avatar at the top right of the screen</action>
+		<action>Tap "Sign out" at the bottom of the menu that opens</action>
+		<action>Verify that the Mailflare sign-in page is shown</action>
+		<action>Press the Home button to go to the Android home screen</action>
+		<action>Tap the "Mailflare" icon on the home screen (swipe left to find it if it is not on the first page) and wait for the app to open</action>
+		<action>Verify that the app opens in its own window without Chrome's tab buttons or editable address bar, and shows the Mailflare sign-in page with an Email field and a Password field</action>
+		<action>Tap the Email field and type "admin@example.com"</action>
+		<action>Tap the Password field and type "demo-password-change-me"</action>
+		<action>Tap the "Sign in" button and wait for the next page to finish loading</action>
+		<action>Verify that the app window, still without Chrome's tab buttons or address bar, shows the Mailflare inbox with the "Search mail" field and the message list</action>
+	</actions>
+</journey>

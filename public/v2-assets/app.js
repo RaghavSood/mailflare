@@ -519,7 +519,7 @@
 
 	/* ---------- touch: sheets, swipe, pull to refresh, recipients, split pane ---------- */
 
-	/* pure:start (DOM-free; tests/v2-touch.test.mjs runs this block on its own) */
+	/* pure:start (DOM-free; tests/v2-touch.test.mjs and tests/v2-realtime.test.mjs run this block on their own) */
 
 	/** The action a horizontal swipe commits to, or null to snap the row back. */
 	function swipeOutcome(dx, width, actions) {
@@ -595,6 +595,31 @@
 	/** "Switch to classic" for the page shown; renderNav and renderTopbar build the same link. */
 	function classicSwitchHref(pathname) {
 		return `/v2/switch?to=classic&from=${encodeURIComponent(pathname)}`;
+	}
+
+	/**
+	 * What the realtime socket does on an event: "hidden" or "visible" (the page),
+	 * "lost" (the socket closed by itself) or "retry" (its reconnect timer). The
+	 * server sends a push notification only to a user with no open socket, so the
+	 * socket is open only while the page is shown; a page shown again reconnects
+	 * and catches up on what it missed.
+	 */
+	function realtimeStep(event, { visible, socket, attempt = 0 }) {
+		if (event === "hidden") return { close: socket };
+		if (event === "visible") return { connect: !socket, catchUp: true };
+		if (event === "lost") return visible ? { retryIn: Math.min(1000 * 2 ** attempt, 30000) } : {};
+		if (event === "retry") return { connect: visible && !socket };
+		return {};
+	}
+
+	/**
+	 * Whether the answer to a background request (a quiet reload, a sidebar poll) is stale: it
+	 * re-renders the page it was sent from, so once the address has changed, or another page has
+	 * started loading since it was sent or is loading now (a link, a notification opened), swapping
+	 * it in would put the old page back, and would drop the loading page's link with its answer.
+	 */
+	function staleBackgroundAnswer(sentFrom, now) {
+		return now.loading > 0 || sentFrom.href !== now.href || sentFrom.navigations !== now.navigations;
 	}
 
 	/* pure:end */
@@ -1762,6 +1787,26 @@
 
 	/* ---------- live updates ---------- */
 
+	// Background requests answer for the page they were sent from (see staleBackgroundAnswer).
+	let navigations = 0;
+	let loading = 0;
+	const here = () => ({ href: location.href, navigations, loading });
+	document.addEventListener("htmx:beforeSend", (event) => {
+		const { xhr, requestConfig: config } = event.detail;
+		if (!xhr) return;
+		if (config?.boosted && config.verb === "get") {
+			navigations++;
+			loading++;
+			xhr.addEventListener("loadend", () => loading--, { once: true });
+		} else if (isBackground(config)) {
+			xhr.mfSentFrom = here();
+		}
+	});
+	document.addEventListener("htmx:beforeSwap", (event) => {
+		const sentFrom = event.detail.xhr?.mfSentFrom;
+		if (sentFrom && staleBackgroundAnswer(sentFrom, here())) event.detail.shouldSwap = false;
+	});
+
 	function refreshQuietly() {
 		// Replayed actions must reach the server before the list is reloaded.
 		if (deferRefreshUntilDrained()) return;
@@ -1778,18 +1823,24 @@
 		}
 	}
 
+	// The socket is open only while the page is shown (see realtimeStep).
+	let socket = null;
+	let reconnectTimer = 0;
+	const pageShown = () => document.visibilityState !== "hidden";
 	function connect(attempt = 0) {
 		if (!("WebSocket" in window)) return;
-		const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/realtime`);
+		clearTimeout(reconnectTimer);
+		const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/realtime`);
+		socket = ws;
 		let heartbeat = 0;
-		socket.addEventListener("open", () => {
+		ws.addEventListener("open", () => {
 			attempt = 0;
-			heartbeat = setInterval(() => socket.readyState === 1 && socket.send("ping"), 25000);
+			heartbeat = setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
 			// The server is back: a cached copy need not wait for its next try, nor changes waiting on a live page.
 			if (body.dataset.cachedAt) syncCachedPage({ restart: true });
 			else if (pendingCount) drainOutbox();
 		});
-		socket.addEventListener("message", (event) => {
+		ws.addEventListener("message", (event) => {
 			try {
 				const payload = JSON.parse(event.data);
 				if (payload?.type === "new_message") refreshQuietly();
@@ -1797,16 +1848,34 @@
 				/* heartbeat replies */
 			}
 		});
-		socket.addEventListener("close", () => {
+		ws.addEventListener("close", () => {
 			clearInterval(heartbeat);
-			setTimeout(() => connect(attempt + 1), Math.min(1000 * 2 ** attempt, 30000));
+			// Closed on purpose while hidden: showing the page again reconnects.
+			if (socket !== ws) return;
+			socket = null;
+			const { retryIn } = realtimeStep("lost", { visible: pageShown(), socket: false, attempt });
+			if (retryIn !== undefined) {
+				reconnectTimer = setTimeout(() => {
+					if (realtimeStep("retry", { visible: pageShown(), socket: Boolean(socket) }).connect) connect(attempt + 1);
+				}, retryIn);
+			}
 		});
 	}
-	connect();
+	if (pageShown()) connect();
 	document.addEventListener("visibilitychange", () => {
-		if (document.visibilityState !== "visible") return;
+		const shown = pageShown();
+		const step = realtimeStep(shown ? "visible" : "hidden", { visible: shown, socket: Boolean(socket) });
+		if (step.close) {
+			clearTimeout(reconnectTimer);
+			const ws = socket;
+			socket = null;
+			ws.close();
+		}
+		if (step.connect) connect();
+		if (!step.catchUp) return;
+		// New mail that arrived while the socket was closed: the list reloads, other pages refresh the sidebar counts.
 		if (body.dataset.cachedAt) syncCachedPage({ restart: true });
-		else if (pageKind() === "list") refreshQuietly();
+		else refreshQuietly();
 	});
 
 	/* ---------- installable app ---------- */
@@ -2023,7 +2092,9 @@
 		const url = event.data?.type === "mf:open" ? event.data.url : null;
 		if (typeof url !== "string") return;
 		const target = new URL(url, location.href);
-		if (target.origin === location.origin && target.pathname.startsWith("/v2/")) navigate(`${target.pathname}${target.search}`);
+		if (target.origin !== location.origin || !target.pathname.startsWith("/v2/")) return;
+		// Focusing the page also starts its quiet reload (visibilitychange): its answer is dropped as stale.
+		navigate(`${target.pathname}${target.search}`);
 	});
 
 	/* ---------- offline: banner, cached pages and the outbox ----------

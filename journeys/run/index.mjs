@@ -33,6 +33,8 @@ const keepChromeData = flag("--keep-chrome-data");
 const allowUnscripted = flag("--allow-unscripted");
 const only = args;
 
+// A step may ask for longer as a third entry, [label, run, { timeout }] (a wait on something outside the device, such as a push service).
+// A script may ask for a longer setup with `setupTimeout` (one that restarts Chrome on a cleared profile).
 const STEP_TIMEOUT = 60_000;
 const SETUP_TIMEOUT = 90_000;
 const JOURNEY_TIMEOUT = 8 * 60_000;
@@ -84,18 +86,7 @@ async function prepareDevice() {
 
 	await device.shell("settings put global hide_error_dialogs 1");
 	await device.setOffline(false);
-	if (!keepChromeData) {
-		// A fresh Chrome profile: one tab, no site data, notifications permission back at "Ask".
-		await device.shell("am force-stop com.android.chrome");
-		await device.shell("pm clear com.android.chrome");
-		await device.shell("pm grant com.android.chrome android.permission.POST_NOTIFICATIONS");
-	}
-	await device.shell("am set-debug-app --persistent com.android.chrome");
-	await device.shell(`echo "chrome --disable-fre --no-default-browser-check --no-first-run --disable-signin-promo" > /data/local/tmp/chrome-command-line`);
-	await device.shell(`am start -a android.intent.action.VIEW -d '${BLANK}' com.android.chrome`);
-	await device.connect();
-	await device.page({ timeout: 30_000 });
-	await device.singleTab();
+	await device.startChrome({ fresh: !keepChromeData });
 	// Touches have been seen not to reach Chrome for a while right after the emulator boots: wait until
 	// one does (on a static page, where a swallowed tap changes nothing) before any journey starts.
 	const warm = Date.now();
@@ -204,14 +195,14 @@ async function runJourney(journey) {
 		await chromeInFront();
 		if (script.setup) {
 			try {
-				await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+				await withTimeout(script.setup(ctx), script.setupTimeout ?? SETUP_TIMEOUT, "setup");
 			} catch (error) {
 				// Setup is not a journey action: if it failed because the server went away (wrangler dev
 				// restarting, see journeys/ci/server.sh), wait for it and set up once more.
 				log(`  setup failed (${error.message.split("\n")[0]}); waiting for the server and setting up again`);
 				if (!(await serverUp())) throw error;
 				await chromeInFront();
-				await withTimeout(script.setup(ctx), SETUP_TIMEOUT, "setup");
+				await withTimeout(script.setup(ctx), script.setupTimeout ?? SETUP_TIMEOUT, "setup");
 			}
 		}
 	} catch (error) {
@@ -222,12 +213,12 @@ async function runJourney(journey) {
 		await capture(journey.id, "setup", result.steps[0]);
 	}
 	let stopped = false;
-	for (const [i, [label, run]] of script.steps.entries()) {
+	for (const [i, [label, run, options]] of script.steps.entries()) {
 		if (result.error || stopped) break;
 		const step = result.steps[i];
 		const t = Date.now();
 		try {
-			await withTimeout(run(ctx), STEP_TIMEOUT, "the step");
+			await withTimeout(run(ctx), options?.timeout ?? STEP_TIMEOUT, "the step");
 			step.status = "passed";
 			step.durationMs = Date.now() - t;
 			log(`  ✅ ${label} (${step.durationMs} ms)`);

@@ -1,0 +1,23 @@
+<journey name="A push notification for new mail opens the message">
+	<description>
+		Start: the Mailflare v2 inbox is open in Chrome and signed in, Chrome has not yet been asked about notifications for localhost:3000 (site permission "Ask"), and the server has VAPID keys configured.
+		New mail is delivered from the computer through the server's email handler (README.md, "Deliver test mail"), each message with a subject no earlier message had.
+		The server sends a push only to a user with no open realtime socket: none while a v2 page is on screen, one once it is behind the home screen.
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen</action>
+		<action>Tap "Turn on notifications" near the bottom of the drawer</action>
+		<action>Tap "Allow" in the Chrome dialog asking whether localhost:3000 may send notifications</action>
+		<action>Verify that a message reading "Notifications are on for this device." appears</action>
+		<action>Press the Home button to go to the Android home screen</action>
+		<action>On the computer, deliver a new message to support@example.com from "Journey Sender 1" with a new subject</action>
+		<action>Swipe down from the top of the screen to open the notification shade</action>
+		<action>Verify that within 90 seconds a notification from "Journey Sender 1" showing that subject appears in the shade</action>
+		<action>Tap that notification</action>
+		<action>Verify that Chrome comes to the front showing Mailflare's conversation view of that message, with its subject as the heading</action>
+		<action>Press the Back button to return to the inbox</action>
+		<action>On the computer, deliver another new message to support@example.com with a second new subject</action>
+		<action>Verify that within 30 seconds the second message appears in the inbox list without the page reloading</action>
+		<action>Wait as long as the first notification took to arrive (at least 10 seconds), then verify that no notification showing the second subject has been posted</action>
+	</actions>
+</journey>
