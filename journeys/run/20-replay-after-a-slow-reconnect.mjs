@@ -1,4 +1,4 @@
-import { APP, expect, sleep, waitFor } from "./harness.mjs";
+import { APP, expect, retryUnlessDone, sleep, waitFor } from "./harness.mjs";
 
 const SUBJECT = "Slow reconnect journey";
 
@@ -42,12 +42,8 @@ const journey = {
 					const row = [...document.querySelectorAll("li[data-row]")].find(window.__j.visible);
 					return { id: row.dataset.id, subject: window.__j.text(row.querySelector(".row-subject")) };
 				});
-				for (let attempt = 1; ; attempt++) {
-					await device.swipe("li[data-row]", { from: [0.03, 0.5], to: [0.97, 0.5], ms: 350, screenEdge: true });
-					const gone = await waitFor(async () => !(await device.eval(listed, state.row.id)), { timeout: 4_000, message: "the swiped row to leave the list" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
-					if (gone) break;
-					device.log("  the swipe did not take; swiping again");
-				}
+				// Swiped once more only if the row is still there: a second swipe at a row already gone would queue the next one.
+				await retryUnlessDone(() => device.swipe("li[data-row]", { from: [0.03, 0.5], to: [0.97, 0.5], ms: 350, screenEdge: true }), async () => !(await device.eval(listed, state.row.id)), { timeout: 4_000, message: "the swiped row to leave the list", log: device.log });
 			},
 		],
 		[

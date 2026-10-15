@@ -7,7 +7,8 @@ const journey = {
 		await device.startSignedIn();
 		await device.ensureServiceWorker();
 		// What must not survive sign-out: the senders and subjects in the stored inbox, and an opened conversation.
-		state.inbox = await device.eval(() => [...document.querySelectorAll("li[data-row]")].flatMap((row) => [window.__j.text(row.querySelector(".row-subject")), window.__j.text(row.querySelector(".row-from"))]).filter(Boolean));
+		// Each sender on its own, without the message count a conversation of several shows beside them.
+		state.inbox = await device.eval(() => [...document.querySelectorAll("li[data-row]")].flatMap((row) => [window.__j.text(row.querySelector(".row-subject")), ...[...row.querySelectorAll(".row-from > span:not(.row-count):not(.draft-label)")].map(window.__j.text)]).filter((text) => text && text !== "me"));
 		const href = await device.eval(() => document.querySelector("li[data-row]").dataset.href);
 		await device.goto(`${APP}${href}`);
 		await device.until(() => !!document.querySelector("h1.thread-subject"), null, { message: "a conversation to open" });

@@ -20,6 +20,22 @@ export function parseJourney(id, xml) {
 	return { id, name: decode(name), description: decode(description), actions };
 }
 
+/**
+ * What `wm size` and `wm density` say is overridden, e.g. ["size 1280x800 (physical 1080x2400)"], or []
+ * when the display is the device's own. A journey that changes the display (17) and is cut off before
+ * its teardown leaves an override behind, and every journey after it would run on that screen.
+ */
+export function displayOverrides(sizeOutput, densityOutput) {
+	const out = [];
+	for (const [what, text] of [["size", sizeOutput], ["density", densityOutput]]) {
+		const override = String(text ?? "").match(new RegExp(`^\\s*Override ${what}:\\s*(\\S+)`, "im"))?.[1];
+		if (!override) continue;
+		const physical = String(text ?? "").match(new RegExp(`^\\s*Physical ${what}:\\s*(\\S+)`, "im"))?.[1];
+		out.push(`${what} ${override}${physical ? ` (physical ${physical})` : ""}`);
+	}
+	return out;
+}
+
 /** Shard "k/n" (1-based) of the list, dealt round-robin so the slow offline journeys spread out. */
 export function shardOf(items, spec) {
 	const match = /^(\d+)\/(\d+)$/.exec(spec);
@@ -54,6 +70,7 @@ export function markdownSummary(results, meta = {}) {
 	lines.push(`## Journeys${meta.shard && meta.shard !== "all" ? ` (shard ${meta.shard})` : ""}: ${passed}/${results.length} passed${count("known") ? ` (${count("known")} with a known issue)` : ""}${count("unscripted") ? `, ${count("unscripted")} not scripted` : ""}`);
 	lines.push("");
 	if (meta.chrome || meta.sdk) lines.push(`Android SDK ${meta.sdk ?? "?"}, Chrome ${meta.chrome ?? "?"}, ${Math.round((meta.durationMs ?? 0) / 1000)} s.`, "");
+	if (meta.warnings?.length) lines.push("> [!WARNING]", ...meta.warnings.map((warning) => `> ${oneLine(warning)}`), "");
 	lines.push("| Journey | Result |", "|---|---|");
 	for (const r of results) {
 		const o = outcome(r);
@@ -74,6 +91,7 @@ export function markdownSummary(results, meta = {}) {
 			if (s.status === "known") lines.push(`   - Known issue: ${r.knownIssue?.issue}`);
 			if (s.error) lines.push(`   - ${oneLine(s.error)}`);
 			if (s.screenshot) lines.push(`   - Screenshot: \`${s.screenshot}\``);
+			if (s.crashLog) lines.push(`   - Android crash log: \`${s.crashLog}\``);
 		});
 	}
 	return `${lines.join("\n")}\n`;

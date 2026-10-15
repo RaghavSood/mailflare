@@ -20,7 +20,9 @@ const journey = {
 			"Tap the first conversation in the inbox list",
 			async ({ device, state }) => {
 				state.subject = await device.eval(() => window.__j.text(document.querySelector("li[data-row] .row-subject")));
-				state.from = await device.eval(() => window.__j.text(document.querySelector("li[data-row] .row-from")));
+				// The first sender named in the row ("me" is the signed-in user), without the message count a
+				// conversation of several shows beside it.
+				state.from = await device.eval(() => [...document.querySelector("li[data-row]").querySelectorAll(".row-from > span:not(.row-count):not(.draft-label)")].map(window.__j.text).find((name) => name && name !== "me"));
 				await device.tap("li[data-row] .row-subject", { effect: () => location.pathname.startsWith("/v2/inbox/"), effectTimeout: 8_000 });
 			},
 		],

@@ -1,4 +1,4 @@
-import { expect } from "./harness.mjs";
+import { expect, retryUnlessDone } from "./harness.mjs";
 
 const firstRow = () => {
 	const row = [...document.querySelectorAll("li[data-row]")].find(window.__j.visible);
@@ -67,16 +67,10 @@ const journey = {
 	],
 };
 
-/** Swipes the first row; once more if the touch did not take (the row is still there and not moving). */
+/** Swipes the first row; once more if the touch did not take (the row is still there), never at the next row. */
 async function swipeUntilGone(device, id, towards) {
-	const { waitFor } = await import("./harness.mjs");
 	const gone = () => device.eval((rowId) => ![...document.querySelectorAll("li[data-row]")].some((row) => row.dataset.id === rowId && window.__j.visible(row)), id);
-	for (let attempt = 1; ; attempt++) {
-		await device.swipe("li[data-row]", rowSwipe(towards));
-		const ok = await waitFor(gone, { timeout: 4_000, message: "the swiped row to leave the list" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
-		if (ok) return;
-		device.log("  the swipe did not take; swiping again");
-	}
+	await retryUnlessDone(() => device.swipe("li[data-row]", rowSwipe(towards)), gone, { timeout: 4_000, message: "the swiped row to leave the list", log: device.log });
 }
 
 export default journey;

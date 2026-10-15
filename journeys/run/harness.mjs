@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import { _android, chromium } from "playwright-core";
+import { displayOverrides } from "./report-utils.mjs";
 
 const exec = promisify(execFile);
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,6 +42,26 @@ export async function waitFor(check, { timeout = 10_000, interval = 200, message
 		}
 		if (Date.now() > deadline) fail(`Timed out after ${timeout} ms waiting for ${message}${last ? ` (last: ${typeof last === "string" ? last : JSON.stringify(last)})` : ""}`);
 		await sleep(interval);
+	}
+}
+
+/**
+ * Does `act`, then waits up to `timeout` for `done`; does it once more only if `done` still does not hold.
+ * What a touch does can show after the wait has given up (the page was busy), and doing it again then
+ * acts on what the first touch changed (taps the drawer's scrim, swipes the next row), so `done` is
+ * given `grace` more before the second try.
+ */
+export async function retryUnlessDone(act, done, { timeout, grace = 1_500, message, log = () => {} }) {
+	for (let attempt = 1; ; attempt++) {
+		await act(attempt);
+		const ok = await waitFor(done, { timeout, message }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+		if (ok) return ok;
+		const late = await waitFor(done, { timeout: grace, message }).catch(() => false);
+		if (late) {
+			log(`  ${message}: happened late, after ${timeout} ms`);
+			return late;
+		}
+		log(`  ${message}: did not happen; once more`);
 	}
 }
 
@@ -89,6 +110,13 @@ const PAGE_HELPERS = `(() => {
 	window.__j = { visible, shown, centre, text, describe, byText };
 })()`;
 
+/** Page function: the v2 drawer is open, slid in and on screen. */
+const DRAWER_OPEN = () => {
+	const nav = document.querySelector("#nav");
+	const r = nav.getBoundingClientRect();
+	return document.body.classList.contains("nav-open") && r.right > innerWidth / 2 && r.left >= -1 && window.__j.visible(nav);
+};
+
 export class Device {
 	constructor({ serial, hostPort = 3000, cdpPort = 9222, log = () => {} }) {
 		this.serial = serial;
@@ -116,6 +144,19 @@ export class Device {
 	 * connection through it and refuses new ones: Airplane mode does not touch the adb reverse tunnel,
 	 * and Chrome keeps connections alive, so removing the tunnel alone left pages able to reach the server.
 	 */
+	/**
+	 * Puts the display back to the device's own size and density if something left it overridden (a
+	 * journey that changes it, cut off before its teardown), and returns what was overridden ([] if nothing).
+	 */
+	async resetDisplay() {
+		const overrides = displayOverrides(await this.shell("wm size"), await this.shell("wm density"));
+		if (overrides.length) await this.shell("wm size reset && wm density reset");
+		const size = (await this.shell("wm size")).match(/(\d+)x(\d+)\s*$/m);
+		this.width = Number(size[1]);
+		this.height = Number(size[2]);
+		return overrides;
+	}
+
 	async startRelay() {
 		this.relayOffline = false;
 		this.relaySockets = new Set();
@@ -223,8 +264,8 @@ export class Device {
 	 * journeys are about the app, not the gesture. The Airplane mode tile itself is still tapped.
 	 */
 	async openQuickSettings() {
-		await this.shell("cmd statusbar expand-settings");
-		await waitFor(() => this.shadeOpen(), { timeout: 3_000, message: "Quick Settings to open" });
+		// A busy SystemUI opens the panel late or drops the request: ask again only once it still is not open.
+		await retryUnlessDone(() => this.shell("cmd statusbar expand-settings"), () => this.shadeOpen(), { timeout: 3_000, message: "Quick Settings to open", log: this.log });
 		await sleep(500);
 	}
 
@@ -266,7 +307,7 @@ export class Device {
 			// Confirm from the page that the server really is out of reach.
 			const page = await this.page().catch(() => null);
 			if (page) {
-				const reached = await page.evaluate(() => fetch(`/login?offline-check=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false)).catch(() => false);
+				const reached = await this.evaluate(page, () => fetch(`/login?offline-check=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false)).catch(() => false);
 				if (reached) fail("the page can still reach the server after going offline");
 			}
 		}
@@ -362,7 +403,7 @@ export class Device {
 				if (candidates.length <= 1) return candidates[0] ?? null;
 				const painting = [];
 				for (const p of candidates) {
-					const frame = await p.evaluate(() => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
+					const frame = await this.evaluate(p, () => Promise.race([new Promise((r) => requestAnimationFrame(() => r(document.visibilityState === "visible"))), new Promise((r) => setTimeout(() => r(false), 400))])).catch(() => false);
 					if (frame) painting.push(p);
 				}
 				const front = painting.at(-1) ?? null;
@@ -383,8 +424,30 @@ export class Device {
 
 	async eval(fn, arg, { page } = {}) {
 		const p = page ?? (await this.page());
-		await p.evaluate(PAGE_HELPERS);
-		return p.evaluate(fn, arg);
+		await this.evaluate(p, PAGE_HELPERS);
+		return this.evaluate(p, fn, arg);
+	}
+
+	/**
+	 * page.evaluate with a deadline. A DevTools call to a page that went away (Chrome restarted, the tab
+	 * replaced) can wait forever, which turned a 30 s wait into a step timed out with no reason. Past the
+	 * deadline the connection is dropped, so the next lookup connects afresh, and the error says what is
+	 * in front; it is a plain Error, so waitFor keeps polling until its own deadline.
+	 */
+	async evaluate(page, fn, arg, { timeout = 10_000 } = {}) {
+		let timer;
+		const call = page.evaluate(fn, arg);
+		call.catch(() => {});
+		try {
+			return await Promise.race([call, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("timeout")), timeout)))]);
+		} catch (error) {
+			if (error.message !== "timeout") throw error;
+			this.browser = null;
+			const front = (await this.shell("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus").catch(() => "")).trim().replace(/^.*\{[^ ]+ u0 /, "").replace(/\}$/, "");
+			throw new Error(`Chrome DevTools did not answer within ${timeout / 1000} s (in front: ${front || "unknown"})`);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	/** Waits until `fn` (run in the page with window.__j helpers) returns something truthy. Survives navigations. */
@@ -414,40 +477,63 @@ export class Device {
 	async calibrate(page, retry = 0) {
 		const known0 = this.calibration.get(page);
 		if (!known0 || retry) await this.settle();
-		const key = await page.evaluate(() => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
+		const key = await this.evaluate(page, () => [innerWidth, innerHeight, visualViewport.offsetTop, visualViewport.offsetLeft, visualViewport.scale, matchMedia("(display-mode: standalone)").matches].join("|"));
 		if (!retry && known0?.key === key) return known0;
-		await page.evaluate(() => {
-			window.__jCal = new Promise((resolve) => {
-				// preventDefault on touchstart suppresses the mouse events and click, so touchend is the last event.
-				const types = ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "touchcancel", "mousedown", "mouseup", "click"];
-				let point = null;
-				const swallow = (event) => {
-					event.preventDefault();
-					event.stopImmediatePropagation();
-					if (event.type === "touchstart") point = { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
-					if (event.type === "touchend" || event.type === "touchcancel") {
-						types.forEach((type) => removeEventListener(type, swallow, true));
-						resolve(point);
-					}
-				};
-				types.forEach((type) => addEventListener(type, swallow, { capture: true, passive: false }));
-			});
-		});
 		const sx = this.width / 2;
 		const sy = this.height * 0.3;
-		await this.tapScreen(sx, sy);
-		const hit = await waitFor(() => page.evaluate(() => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
-			timeout: 3_000,
-			message: "the calibration tap to reach the page (is native UI covering it?)",
-		}).catch(() => null);
-		if (!hit && retry >= 2) fail(`${"the calibration tap did not reach the page"}; ${await this.diagnoseTouch(sx, sy)}`);
+		// An earlier calibration tap on this document may have arrived after its wait: use it, not another tap.
+		let hit = await this.evaluate(page, () => (window.__jCalState && !window.__jCalState.done ? window.__jCalState.point : null)).catch(() => null);
+		if (hit) this.log("  the earlier calibration tap reached the page late; using it");
+		if (!hit) {
+			await this.evaluate(page, () => {
+				// Every calibration tap sent to this document is swallowed, including one that arrives late
+				// next to its retry: a calibration tap must never reach the app.
+				const state = window.__jCalState;
+				if (state && !state.done) {
+					state.expected += 1;
+					return;
+				}
+				// preventDefault on touchstart suppresses the mouse events and click, so touchend is the last event.
+				const types = ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "touchcancel", "mousedown", "mouseup", "click"];
+				const fresh = { expected: 1, ended: 0, point: null, done: false };
+				window.__jCalState = fresh;
+				window.__jCal = new Promise((resolve) => {
+					const swallow = (event) => {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						if (event.type === "touchstart" && !fresh.point) fresh.point = { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+						if (event.type === "touchend" || event.type === "touchcancel") {
+							fresh.ended += 1;
+							resolve(fresh.point);
+							if (fresh.ended >= fresh.expected) fresh.finish();
+						}
+					};
+					fresh.finish = () => {
+						fresh.done = true;
+						types.forEach((type) => removeEventListener(type, swallow, true));
+					};
+					types.forEach((type) => addEventListener(type, swallow, { capture: true, passive: false }));
+				});
+			});
+			await this.tapScreen(sx, sy);
+			hit = await waitFor(() => this.evaluate(page, () => Promise.race([window.__jCal, new Promise((r) => setTimeout(() => r(null), 500))])), {
+				timeout: 3_000,
+				message: "the calibration tap to reach the page (is native UI covering it?)",
+			}).catch(() => null);
+		}
+		if (!hit && retry >= 2) {
+			await this.evaluate(page, () => window.__jCalState?.finish?.()).catch(() => {});
+			fail(`the calibration tap did not reach the page; ${await this.diagnoseTouch(sx, sy)}`);
+		}
 		// A document that replaced the page after the listener went in (a service worker taking over, say)
 		// lost it, and the first touch after Chrome starts can be dropped: try again, twice at most.
 		if (!hit) {
 			await sleep(700);
 			return this.calibrate(page, retry + 1);
 		}
-		const dpr = await page.evaluate(() => devicePixelRatio);
+		// Calibrated: stop swallowing. A tap that was dropped for good must not swallow the app's next touch.
+		await this.evaluate(page, () => window.__jCalState?.finish?.()).catch(() => {});
+		const dpr = await this.evaluate(page, () => devicePixelRatio);
 		const cal = { key, dpr, offX: sx - hit.clientX * dpr, offY: sy - hit.clientY * dpr };
 		this.calibration.set(page, cal);
 		return cal;
@@ -458,13 +544,13 @@ export class Device {
 		const parts = [];
 		try {
 			const pages = this.pages();
-			await Promise.all(pages.map((p) => p.evaluate(() => {
+			await Promise.all(pages.map((p) => this.evaluate(p, () => {
 				window.__jSeen = [];
 				for (const type of ["pointerdown", "touchstart"]) addEventListener(type, () => window.__jSeen.push(type), { capture: true });
 			}).catch(() => {})));
 			await this.tapScreen(x, y);
 			await sleep(800);
-			const seen = await Promise.all(pages.map(async (p) => `${p.url()} [${await p.evaluate(() => `${document.visibilityState}, ${document.hasFocus() ? "focused" : "unfocused"}, ${window.__jSeen.join("+") || "no touch"}`).catch((e) => e.message.slice(0, 40))}]`));
+			const seen = await Promise.all(pages.map(async (p) => `${p.url()} [${await this.evaluate(p, () => `${document.visibilityState}, ${document.hasFocus() ? "focused" : "unfocused"}, ${window.__jSeen.join("+") || "no touch"}`).catch((e) => e.message.slice(0, 40))}]`));
 			parts.push(`pages: ${seen.join("; ")}`);
 			parts.push((await this.shell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2")).replace(/\s+/g, " ").trim());
 			parts.push(`input: ${(await this.shell("dumpsys input 2>/dev/null | grep -E 'FocusedWindow|FocusedApplication' | head -3")).replace(/\s+/g, " ").trim()}`);
@@ -492,8 +578,8 @@ export class Device {
 		let covered = null;
 		const box = await waitFor(
 			async () => {
-				await page.evaluate(PAGE_HELPERS);
-				const found = await page.evaluate(({ selector, text, index }) => {
+				await this.evaluate(page, PAGE_HELPERS);
+				const found = await this.evaluate(page, ({ selector, text, index }) => {
 					const pattern = text && text.source !== undefined ? new RegExp(text.source, text.flags) : text;
 					let el;
 					if (pattern !== undefined) el = window.__j.byText(selector ?? "*", pattern);
@@ -533,31 +619,64 @@ export class Device {
 	/**
 	 * Taps an element with a real touch and checks the touch landed on it. With `effect` (a page
 	 * function), waits for it to hold and taps once more if the first touch had no effect.
+	 *
+	 * A busy page can take a touch, or show its effect, after the wait for it has given up. A second
+	 * touch then acts on what the first one did (the drawer's scrim, a menu now covering the target), so
+	 * before touching again this looks for the first touch arriving late and for its effect.
 	 */
 	async tap(target, options = {}) {
 		const { effect, arg, effectTimeout = 3_000, ...rest } = options;
+		const what = describeTarget(typeof target === "string" ? { selector: target } : target);
+		const happened = () => (effect ? this.eval(effect, arg).catch(() => false) : false);
 		for (let attempt = 1; ; attempt++) {
 			let result;
 			try {
 				result = await this.tapOnce(target, rest);
 			} catch (error) {
+				// The second try finding its target covered or gone can be the first touch's work, done late.
+				if (attempt >= 2 && effect && (await happened())) {
+					this.log(`  the first tap on ${what} took effect late`);
+					return null;
+				}
 				// A touch that never reached the page is worth one more try; then say where it went.
 				if (!/never reached the page/.test(error.message)) throw error;
 				if (attempt >= 2) fail(`${error.message}; ${await this.diagnoseTouch(this.width / 2, this.height * 0.3)}`);
-				this.log("  the tap never reached the page; tapping again");
-				continue;
+				const late = await this.lateTouch();
+				if (late && !late.hit) fail(`the tap meant for ${what} reached the page late and landed on ${late.on}`);
+				if (late) {
+					this.log(`  the tap on ${what} reached the page late`);
+					if (!effect) return null;
+				} else if (await happened()) {
+					this.log(`  the tap on ${what} took effect without its touch being seen`);
+					return null;
+				} else {
+					this.log("  the tap never reached the page; tapping again");
+					continue;
+				}
 			}
 			if (!effect) return result;
-			const ok = await waitFor(() => this.eval(effect, arg), { timeout: effectTimeout, message: `the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} to take effect` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
+			const ok = await waitFor(happened, { timeout: effectTimeout, message: `the tap on ${what} to take effect` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
 			if (ok) return result;
-			this.log(`  the tap on ${describeTarget(typeof target === "string" ? { selector: target } : target)} had no effect; tapping again`);
+			const late = await waitFor(happened, { timeout: 1_500, message: `the tap on ${what} to take effect` }).catch(() => false);
+			if (late) {
+				this.log(`  the tap on ${what} took effect late, after ${effectTimeout} ms`);
+				return result;
+			}
+			this.log(`  the tap on ${what} had no effect; tapping again`);
 		}
+	}
+
+	/** After a tap that seemed not to reach the page: whether it arrived since (tapOnce's listener saw it), waiting a moment. */
+	async lateTouch() {
+		await sleep(1_500);
+		const page = await this.page().catch(() => null);
+		return page ? this.evaluate(page, () => window.__jTap ?? null).catch(() => null) : null;
 	}
 
 	async tapOnce(target, options = {}) {
 		const { page, box } = await this.locate(target, options);
 		const point = await this.toScreen(page, box.x, box.y);
-		await page.evaluate(() => {
+		await this.evaluate(page, () => {
 			window.__jTap = null;
 			addEventListener("pointerdown", (event) => {
 				window.__jTap = { hit: window.__jTarget?.contains(event.target) || event.target.contains?.(window.__jTarget), on: window.__j.describe(event.target) };
@@ -567,7 +686,7 @@ export class Device {
 		// The touch arrives a moment after `input tap` returns; a navigation it starts ends the check.
 		let landed;
 		for (let i = 0; i < 15 && !landed; i++) {
-			landed = await page.evaluate(() => window.__jTap).catch(() => undefined);
+			landed = await this.evaluate(page, () => window.__jTap).catch(() => undefined);
 			if (landed === undefined) break;
 			if (!landed) await sleep(100);
 		}
@@ -578,16 +697,7 @@ export class Device {
 
 	/** Taps a text field and waits for it to take focus, tapping once more if the first touch did not focus it. */
 	async focus(selector) {
-		for (let attempt = 1; ; attempt++) {
-			await this.tap(selector);
-			try {
-				await this.until((sel) => document.activeElement === document.querySelector(sel) || document.querySelector(sel)?.contains(document.activeElement), selector, { timeout: 3_000, message: `${selector} to take focus` });
-				return;
-			} catch (error) {
-				if (attempt >= 2) throw error;
-				this.log(`  ${selector} did not take focus; tapping again`);
-			}
-		}
+		await this.tap(selector, { effect: (sel) => document.activeElement === document.querySelector(sel) || !!document.querySelector(sel)?.contains(document.activeElement), arg: selector, effectTimeout: 3_000 });
 	}
 
 	/**
@@ -607,7 +717,10 @@ export class Device {
 			const expected = before + text;
 			const ok = await waitFor(async () => (await this.eval(read, selector)) === expected, { timeout: 4_000, message: `${selector} to hold the typed text` }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
 			if (ok) return;
-			const length = (await this.eval(read, selector)).length;
+			const now = await this.eval(read, selector);
+			// The last characters can land just after the wait: never clear text that is complete.
+			if (now === expected) return;
+			const length = now.length;
 			this.log(`  ${selector} did not get all of the text; clearing and typing it again`);
 			await this.shell(`input keyevent 123 ${"67 ".repeat(Math.max(0, length - before.length) + 2)}`);
 		}
@@ -643,13 +756,13 @@ export class Device {
 	async signIn() {
 		let page = await this.page().catch(() => null);
 		if (!page) page = await this.goto(BLANK);
-		const status = await page.evaluate(async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
+		const status = await this.evaluate(page, async (login) => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(login) })).status, LOGIN);
 		if (status !== 200) fail(`sign-in for setup answered ${status}`);
 	}
 
 	async signOut() {
 		const page = await this.page();
-		await page.evaluate(() => fetch("/api/auth/logout", { method: "POST" }).catch(() => {}));
+		await this.evaluate(page, () => fetch("/api/auth/logout", { method: "POST" }).catch(() => {}));
 		await page.context().clearCookies();
 	}
 
@@ -658,13 +771,13 @@ export class Device {
 		await this.goto(BLANK);
 		await this.signIn();
 		let page = await this.goto(`${APP}/v2/inbox`);
-		const count = await page.evaluate(() => document.querySelectorAll("li[data-row]").length);
+		const count = await this.evaluate(page, () => document.querySelectorAll("li[data-row]").length);
 		if (count < rows) {
 			await this.deliverMail(rows - count);
 			// Delivery goes through the inbound queue: wait until the list has the new mail.
 			await waitFor(async () => {
 				page = await this.goto(`${APP}/v2/inbox`);
-				return (await page.evaluate(() => document.querySelectorAll("li[data-row]").length)) >= rows;
+				return (await this.evaluate(page, () => document.querySelectorAll("li[data-row]").length)) >= rows;
 			}, { timeout: 30_000, interval: 1_000, message: `${rows} conversations in the inbox after delivering mail` });
 		}
 		if (path !== "/v2/inbox") await this.goto(`${APP}${path}`);
@@ -678,7 +791,7 @@ export class Device {
 	 */
 	async ensureServiceWorker() {
 		let page = await this.page();
-		await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+		await this.evaluate(page, () => navigator.serviceWorker.ready.then(() => true), undefined, { timeout: 30_000 });
 		await page.reload({ waitUntil: "load" });
 		page = await this.page();
 		await this.until(async () => {
@@ -692,23 +805,16 @@ export class Device {
 
 	/** The v2 drawer: open when the body says so and the folder list is on screen. */
 	async drawerOpen() {
-		return this.eval(() => {
-			const nav = document.querySelector("#nav");
-			const r = nav.getBoundingClientRect();
-			return document.body.classList.contains("nav-open") && r.right > innerWidth / 2 && r.left >= -1 && window.__j.visible(nav);
-		});
+		return this.eval(DRAWER_OPEN);
 	}
 
-	/** Taps the menu button and waits for the drawer; one more tap if the first touch was dropped (as after Quick Settings closes). */
+	/**
+	 * Taps the menu button and waits for the drawer; one more tap if the first touch was dropped (as after
+	 * Quick Settings closes), but only once the drawer has had time to open late: a second tap on an open
+	 * drawer lands on its scrim.
+	 */
 	async openDrawer() {
-		for (let attempt = 1; ; attempt++) {
-			await this.tap("[data-nav-toggle]");
-			const open = await waitFor(() => this.drawerOpen(), { timeout: 2_500, message: "the drawer to open" }).catch((error) => (attempt >= 2 ? Promise.reject(error) : false));
-			if (open) return;
-			// A busy device can open it just after the wait; a second tap would then land on the drawer.
-			if (await waitFor(() => this.drawerOpen(), { timeout: 1_500 }).catch(() => false)) return;
-			this.log("  the drawer did not open; tapping the menu button again");
-		}
+		await this.tap("[data-nav-toggle]", { effect: DRAWER_OPEN, effectTimeout: 2_500 });
 	}
 
 	/** Waits until the page has stopped changing: the same document, fully loaded, no htmx request in flight. */

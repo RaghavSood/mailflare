@@ -63,8 +63,21 @@ async function withTimeout(promise, ms, what) {
 	}
 }
 
+/** Run-level warnings for the summary (the display found overridden). */
+const warnings = [];
+
+/** The display as the device has it: an override left by an interrupted journey is reset and reported. */
+async function ensureOwnDisplay(before) {
+	const overrides = await device.resetDisplay();
+	if (!overrides.length) return;
+	const warning = `The display was overridden (${overrides.join(", ")}) ${before}, left by an interrupted journey; it was reset.`;
+	warnings.push(warning);
+	log(`  ⚠️ ${warning}`);
+}
+
 async function prepareDevice() {
 	await device.open();
+	await ensureOwnDisplay("when the run started");
 	log(`device ${device.serial} ${device.width}x${device.height}, server on host port ${device.hostPort}`);
 	const res = await fetch(`http://127.0.0.1:${device.hostPort}/login`).catch((error) => ({ ok: false, status: error.message }));
 	if (!res.ok) throw new Error(`The server on host port ${device.hostPort} is not answering /login (${res.status}). Start it as journeys/README.md describes.`);
@@ -186,6 +199,7 @@ async function runJourney(journey) {
 	try {
 		// Nothing left over from the journey before: the server up, no Quick Settings, a Chrome tab in front.
 		if (!(await serverUp())) throw new Error(`the server on host port ${device.hostPort} is not answering /login (see wrangler.log)`);
+		await ensureOwnDisplay(`before ${journey.id}`);
 		await networkUp();
 		await chromeInFront();
 		if (script.setup) {
@@ -260,6 +274,16 @@ async function capture(id, step, into) {
 	} catch (error) {
 		log(`  (screenshot failed: ${error.message})`);
 	}
+	// Whether an app crashed (Chrome leaving the screen mid-step, say): Android's crash log, if it has anything.
+	try {
+		const crashes = (await device.shell("logcat -d -b crash 2>/dev/null | tail -200")).trim();
+		if (crashes) {
+			writeFileSync(join(out, `screens/${id}-${step}-crash.txt`), `${crashes}\n`);
+			into.crashLog = `screens/${id}-${step}-crash.txt`;
+		}
+	} catch {
+		/* no crash log to add */
+	}
 }
 
 const started = Date.now();
@@ -283,7 +307,7 @@ try {
 	results.push({ id: "setup", name: "Device and server setup", steps: [{ label: "Prepare the device", status: "failed", error: error.message }], error: error.message, durationMs: 0 });
 }
 
-const meta = { shard: shard ?? "all", chrome: env.chrome, sdk: env.sdk, durationMs: Date.now() - started };
+const meta = { shard: shard ?? "all", chrome: env.chrome, sdk: env.sdk, durationMs: Date.now() - started, warnings };
 writeFileSync(join(out, `junit${shard ? `-${shard.replace("/", "of")}` : ""}.xml`), junitXml(results, meta));
 writeFileSync(join(out, `summary${shard ? `-${shard.replace("/", "of")}` : ""}.md`), markdownSummary(results, meta));
 const counts = Object.groupBy(results, outcome);
