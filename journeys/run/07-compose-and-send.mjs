@@ -68,6 +68,32 @@ const journey = {
 			},
 		],
 		[
+			'Type "@" into the "To" field and tap the "Send" button',
+			async ({ device }) => {
+				await device.typeInto('form[data-composer] input[id^="to-"]', "@");
+				await device.tap("[data-cmp-send]", { effect: () => [...document.querySelectorAll("#toast .toast")].some((t) => window.__j.text(t).includes("isn't an email address")), effectTimeout: 5_000 });
+			},
+		],
+		[
+			'Verify that a message saying "@" isn\'t an email address appears, that the composer is still open, and that the cursor is in the "To" field',
+			async ({ device }) => {
+				await device.see('"@" isn\'t an email address.', { selector: "#toast .toast" });
+				const open = await device.eval(() => [...document.querySelectorAll("form[data-composer]")].some(window.__j.visible));
+				expect(open, "the composer closed");
+				await device.until(() => document.activeElement?.matches?.('form[data-composer] input[id^="to-"]') && window.__j.visible(document.activeElement), null, { timeout: 3_000, message: 'the cursor to be in the "To" field' });
+			},
+		],
+		[
+			'Press the keyboard\'s delete key once to remove the "@"',
+			async ({ device }) => {
+				await device.shell("input keyevent 67");
+				await device.until(() => {
+					const form = [...document.querySelectorAll("form[data-composer]")].find(window.__j.visible);
+					return form && form.querySelector('input[id^="to-"]').value === "" && form.elements.to.value === "" && !form.querySelector(".rcpt-chip");
+				}, null, { timeout: 3_000, message: 'the "To" field to be empty' });
+			},
+		],
+		[
 			'Type "maya" into the "To" field',
 			async ({ device }) => {
 				const focused = await device.eval(() => document.activeElement?.matches?.("form[data-composer] [data-recipients]:not([data-cmp-row] *)"));

@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import { _android, chromium } from "playwright-core";
-import { displayOverrides } from "./report-utils.mjs";
+import { displayOverrides, inRegion, keyboardRegion } from "./report-utils.mjs";
 
 const exec = promisify(execFile);
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -238,6 +238,11 @@ export class Device {
 	async keyboardShown() {
 		const out = await this.shell("dumpsys input_method | grep -m1 mInputShown");
 		return /mInputShown=true/.test(out);
+	}
+
+	/** Where on the screen touches go to the on-screen keyboard ([] while it is hidden). */
+	async keyboardRegion() {
+		return keyboardRegion(await this.shell("dumpsys window InputMethod"));
 	}
 
 	/**
@@ -642,6 +647,9 @@ export class Device {
 				if (!/never reached the page/.test(error.message)) throw error;
 				if (attempt >= 2) fail(`${error.message}; ${await this.diagnoseTouch(this.width / 2, this.height * 0.3)}`);
 				const late = await this.lateTouch();
+				// It pressed a key instead: the page has changed, and touching again would act on that (#53).
+				const typed = await this.eval(() => window.__jTyped ?? null).catch(() => null);
+				if (typed) fail(`the tap meant for ${what} never reached the page; it typed "${typed.data}" into ${typed.into} (on-screen keyboard?)`);
 				if (late && !late.hit) fail(`the tap meant for ${what} reached the page late and landed on ${late.on}`);
 				if (late) {
 					this.log(`  the tap on ${what} reached the page late`);
@@ -674,13 +682,32 @@ export class Device {
 	}
 
 	async tapOnce(target, options = {}) {
-		const { page, box } = await this.locate(target, options);
-		const point = await this.toScreen(page, box.x, box.y);
+		const what = describeTarget(typeof target === "string" ? { selector: target } : target);
+		// The keyboard is on screen before Chrome shrinks the page for it (a second or more on a busy
+		// device), and a touch on the page's old layout then presses a key instead (#53): wait for the page.
+		let page, box, point;
+		const deadline = Date.now() + 8_000;
+		for (let waited = false; ; waited = true) {
+			({ page, box } = await this.locate(target, options));
+			point = await this.toScreen(page, box.x, box.y);
+			if (!inRegion(await this.keyboardRegion(), point.x, point.y)) break;
+			if (Date.now() > deadline) fail(`${what} is covered by the on-screen keyboard`);
+			if (!waited) this.log(`  ${what} is under the on-screen keyboard; waiting for the page to make room`);
+			await sleep(250);
+		}
 		await this.evaluate(page, () => {
 			window.__jTap = null;
 			addEventListener("pointerdown", (event) => {
 				window.__jTap = { hit: window.__jTarget?.contains(event.target) || event.target.contains?.(window.__jTarget), on: window.__j.describe(event.target) };
 			}, { capture: true, once: true });
+			// A touch the page never sees can still type into it, through the keyboard it landed on.
+			window.__jTypedOff?.();
+			window.__jTyped = null;
+			const typed = (event) => {
+				window.__jTyped ??= { data: event.data ?? event.inputType, into: window.__j.describe(event.target) };
+			};
+			addEventListener("beforeinput", typed, { capture: true });
+			window.__jTypedOff = () => removeEventListener("beforeinput", typed, { capture: true });
 		});
 		await this.tapScreen(point.x, point.y);
 		// The touch arrives a moment after `input tap` returns; a navigation it starts ends the check.
@@ -690,8 +717,8 @@ export class Device {
 			if (landed === undefined) break;
 			if (!landed) await sleep(100);
 		}
-		if (landed === null) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} never reached the page (native UI covering it?)`);
-		if (landed && !landed.hit) fail(`the tap meant for ${describeTarget(typeof target === "string" ? { selector: target } : target)} landed on ${landed.on}`);
+		if (landed === null) fail(`the tap meant for ${what} never reached the page (native UI covering it?)`);
+		if (landed && !landed.hit) fail(`the tap meant for ${what} landed on ${landed.on}`);
 		return { page, box, point };
 	}
 

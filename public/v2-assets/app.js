@@ -561,6 +561,21 @@
 		return { name: "", email: text.trim() };
 	}
 
+	/**
+	 * Why Send has to wait, as { field, message }, or null: To needs an entry, and every entry in
+	 * [[name, value], ...] must be an address. A stray "@" is not a recipient (#53).
+	 * recipientProblem in src/lib/v2/data/compose-utils.ts is the server's copy of this rule.
+	 */
+	function recipientProblem(fields) {
+		for (const [field, value] of fields) {
+			const entries = splitRecipients(`${value ?? ""},`).done;
+			const bad = entries.find((entry) => !/^[^\s@<>",;]+@[^\s@<>",;]+$/.test(parseRecipient(entry).email));
+			if (bad) return { field, message: `"${bad}" isn't an email address.` };
+			if (field === "to" && !entries.length) return { field, message: "Add at least one recipient." };
+		}
+		return null;
+	}
+
 	/** Keep one history entry while a sheet or the drawer is open: push it, drop it once nothing is open, or leave it. */
 	function sheetHistoryStep(open, onEntry, busy) {
 		if (open && !onEntry) return "push";
@@ -1322,11 +1337,13 @@
 		form.addEventListener("submit", (event) => {
 			const editor = $("[data-editor]", form);
 			$("[data-html]", form).value = editor ? editor.innerHTML : "";
-			if (!form.elements.to.value.trim()) {
+			const problem = recipientProblem(["to", "cc", "bcc"].map((name) => [name, form.elements[name]?.value]));
+			if (problem) {
 				event.preventDefault();
 				event.stopImmediatePropagation();
-				toast("Add at least one recipient.");
-				(form.elements.to.recipientInput ?? form.elements.to).focus();
+				toast(problem.message);
+				const field = form.elements[problem.field];
+				(field.recipientInput ?? field).focus();
 				return;
 			}
 			if (form.dataset.mode === "dock") form.elements.return.value = `${location.pathname}${location.search}`;

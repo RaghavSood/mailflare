@@ -7,6 +7,9 @@
 		<action>Verify that a "New message" composer fills the screen with "From", "To" and "Subject" fields, a message area and a "Send" button, and that the on-screen keyboard is open</action>
 		<action>Tap the "Send" button without adding a recipient</action>
 		<action>Verify that a message reading "Add at least one recipient." appears, that the on-screen keyboard is open, and that the cursor is in the "To" field</action>
+		<action>Type "@" into the "To" field and tap the "Send" button</action>
+		<action>Verify that a message saying "@" isn't an email address appears, that the composer is still open, and that the cursor is in the "To" field</action>
+		<action>Press the keyboard's delete key once to remove the "@"</action>
 		<action>Type "maya" into the "To" field</action>
 		<action>Verify that a suggestion showing "Maya Chen" and "maya@acme.test" is visible above the keyboard</action>
 		<action>Tap the "Maya Chen" suggestion</action>

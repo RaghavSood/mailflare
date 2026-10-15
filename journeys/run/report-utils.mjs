@@ -36,6 +36,22 @@ export function displayOverrides(sizeOutput, densityOutput) {
 	return out;
 }
 
+/**
+ * The screen rectangles that touches go to the on-screen keyboard, from `dumpsys window InputMethod`;
+ * [] while it is hidden (the window keeps its last region then, with isVisible=false).
+ */
+export function keyboardRegion(dumpOutput) {
+	const text = String(dumpOutput ?? "");
+	if (!/^\s*isVisible=true\b/m.test(text)) return [];
+	const region = text.match(/touchable region=SkRegion\(((?:\(\d+,\d+,\d+,\d+\))*)\)/)?.[1] ?? "";
+	return [...region.matchAll(/\((\d+),(\d+),(\d+),(\d+)\)/g)].map((m) => ({ left: Number(m[1]), top: Number(m[2]), right: Number(m[3]), bottom: Number(m[4]) }));
+}
+
+/** Whether a screen point falls in any of the rectangles (left/top inclusive, right/bottom exclusive). */
+export function inRegion(rects, x, y) {
+	return rects.some((r) => x >= r.left && x < r.right && y >= r.top && y < r.bottom);
+}
+
 /** Shard "k/n" (1-based) of the list, dealt round-robin so the slow offline journeys spread out. */
 export function shardOf(items, spec) {
 	const match = /^(\d+)\/(\d+)$/.exec(spec);

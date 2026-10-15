@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { displayOverrides, junitXml, markdownSummary, outcome, parseJourney, runFails, shardOf } from "../journeys/run/report-utils.mjs";
+import { displayOverrides, inRegion, junitXml, keyboardRegion, markdownSummary, outcome, parseJourney, runFails, shardOf } from "../journeys/run/report-utils.mjs";
 
 const journeysDir = join(dirname(fileURLToPath(import.meta.url)), "..", "journeys");
 const journeys = readdirSync(journeysDir)
@@ -66,6 +66,35 @@ test("a display override left by an interrupted journey is recognised, and only 
 	assert.deepEqual(displayOverrides("Physical size: 1080x2400\n", density), ["density 200 (physical 420)"]);
 	assert.deepEqual(displayOverrides("Physical size: 1080x2400\n", "Physical density: 420\n"), []);
 	assert.deepEqual(displayOverrides("", undefined), [], "no output (adb failed) is not an override");
+});
+
+// Shaped like `dumpsys window InputMethod` on the CI image (API 36, Gboard) with the keyboard up, and after it hides.
+const IME_SHOWN = `WINDOW MANAGER WINDOWS (dumpsys window windows)
+  Window #0 Window{3adcd4b u0 InputMethod}:
+    mGivenContentInsets=[0,1454][0,0] mGivenVisibleInsets=[0,1454][0,0]
+    mTouchableInsets=3 mGivenInsetsPending=false
+    touchable region=SkRegion((0,1517,1080,2400))
+    mHasSurface=true isReadyForDisplay()=true mWindowRemovalAllowed=false
+    isVisible=true
+`;
+const IME_HIDDEN = IME_SHOWN.replace("isReadyForDisplay()=true", "isReadyForDisplay()=false").replace("isVisible=true", "isVisible=false");
+
+test("a tap point under the on-screen keyboard is recognised from the IME window's touchable region (#53)", () => {
+	const shown = keyboardRegion(IME_SHOWN);
+	assert.deepEqual(shown, [{ left: 0, top: 1517, right: 1080, bottom: 2400 }]);
+	// Send at the composer's foot before Chrome shrinks the page for the keyboard: on the keyboard's bottom row.
+	assert.ok(inRegion(shown, 165, 2253));
+	// The same button once the page has shrunk, and the composer's header: above it.
+	assert.ok(!inRegion(shown, 165, 1400));
+	assert.ok(!inRegion(shown, 540, 1516));
+	assert.ok(inRegion(shown, 540, 1517));
+	// A hidden keyboard keeps its last region in the dump; it covers nothing.
+	assert.deepEqual(keyboardRegion(IME_HIDDEN), []);
+	assert.deepEqual(keyboardRegion(""), [], "no output (adb failed) covers nothing");
+	const two = keyboardRegion(IME_SHOWN.replace("SkRegion((0,1517,1080,2400))", "SkRegion((0,1517,1080,1600)(0,1600,540,2400))"));
+	assert.equal(two.length, 2);
+	assert.ok(inRegion(two, 100, 2000));
+	assert.ok(!inRegion(two, 900, 2000));
 });
 
 test("run warnings are shown above the results, and only when there are some", () => {

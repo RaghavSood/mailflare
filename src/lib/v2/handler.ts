@@ -30,7 +30,7 @@ import {
 	sendCompose,
 	type ComposeInput,
 } from "./data/compose";
-import { DraftGoneError, DraftSendingError, parseFromValue } from "./data/compose-utils";
+import { DraftGoneError, DraftSendingError, parseFromValue, recipientProblem } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
@@ -346,7 +346,8 @@ function composeInputFrom(form: FormData, ctx: V2Context): ComposeInput | { erro
 async function handleSend(ctx: V2Context, form: FormData, current: string | null): Promise<Response> {
 	const input = composeInputFrom(form, ctx);
 	if ("error" in input) return htmlResponse(input.error, { status: 422 });
-	if (!input.to.trim()) return htmlResponse("Add at least one recipient.", { status: 422 });
+	const problem = recipientProblem(input);
+	if (problem) return htmlResponse(problem, { status: 422 });
 	const uploads: AttachmentContent[] = [];
 	for (const value of form.getAll("attachments")) {
 		if (!(value instanceof File) || value.size === 0) continue;
