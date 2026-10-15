@@ -3,7 +3,7 @@ import { icon } from "../icons";
 import { listHref, threadHref } from "../paths";
 import type { V2Context, V2Folder, V2ListPage, V2ListRow, V2ViewKey } from "../types";
 import { avatarHue, formatCount, formatListDate, initials } from "./format";
-import { moveMenu, snoozeDefaultButton, snoozeMenu } from "./menus";
+import { moreMenu, moveMenu, snoozeDefaultButton, snoozeMenu } from "./menus";
 
 export type ListPageInput = {
 	view: V2ViewKey;
@@ -84,6 +84,7 @@ export function renderListMain(ctx: V2Context, input: ListPageInput): Html {
 	const prevHref = listHref(input.view, { folderId: input.folderId, q: input.q, page: page.page - 1 });
 	const nextHref = listHref(input.view, { folderId: input.folderId, q: input.q, page: page.page + 1 });
 	const canMove = input.view !== "drafts" && input.view !== "sent";
+	const canSpam = input.view !== "spam" && input.view !== "drafts";
 	return html`<main id="main" class="main" hx-history-elt>
 	<div class="page" data-page="list" data-view="${input.view}" data-prev="${hasPrev ? prevHref : ""}" data-next="${hasNext ? nextHref : ""}">
 		<div class="toolbar" role="toolbar" aria-label="Conversation actions">
@@ -100,13 +101,18 @@ export function renderListMain(ctx: V2Context, input: ListPageInput): Html {
 				${input.view === "spam" || input.view === "archive" || input.view === "trash"
 					? html`<button class="icon-button" type="submit" form="list-form" name="action" value="inbox" title="${input.view === "spam" ? "Not spam" : "Move to Inbox"}" aria-label="Move to Inbox">${icon("inbox")}</button>`
 					: html`<button class="icon-button" type="submit" form="list-form" name="action" value="archive" title="Archive (e)" aria-label="Archive">${icon("archive")}</button>`}
-				${input.view !== "spam" && input.view !== "drafts" ? html`<button class="icon-button" type="submit" form="list-form" name="action" value="spam" title="Report spam (!)" aria-label="Report spam">${icon("alert")}</button>` : ""}
+				${canSpam ? html`<button class="icon-button tb-overflow" type="submit" form="list-form" name="action" value="spam" title="Report spam (!)" aria-label="Report spam">${icon("alert")}</button>` : ""}
 				${input.view !== "trash" ? html`<button class="icon-button" type="submit" form="list-form" name="action" value="trash" title="Delete (#)" aria-label="Delete">${icon("trash")}</button>` : ""}
 				<span class="tb-sep"></span>
-				<button class="icon-button" type="submit" form="list-form" name="action" value="read" title="Mark as read (Shift+I)" aria-label="Mark as read">${icon("mail-open")}</button>
-				<button class="icon-button" type="submit" form="list-form" name="action" value="unread" title="Mark as unread (Shift+U)" aria-label="Mark as unread">${icon("mail")}</button>
+				<button class="icon-button tb-overflow" type="submit" form="list-form" name="action" value="read" title="Mark as read (Shift+I)" aria-label="Mark as read">${icon("mail-open")}</button>
+				<button class="icon-button tb-overflow" type="submit" form="list-form" name="action" value="unread" title="Mark as unread (Shift+U)" aria-label="Mark as unread">${icon("mail")}</button>
 				${canMove ? snoozeMenu("list-form") : ""}
 				${canMove ? moveMenu("list-form", input.folders) : ""}
+				${moreMenu("list-form", [
+					...(canSpam ? [{ value: "spam", label: "Report spam", icon: "alert" }] : []),
+					{ value: "read", label: "Mark as read", icon: "mail-open" },
+					{ value: "unread", label: "Mark as unread", icon: "mail" },
+				])}
 			</div>
 			<div class="tb-spacer"></div>
 			<div class="tb-pager">

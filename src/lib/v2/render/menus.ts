@@ -3,9 +3,9 @@ import { icon } from "../icons";
 import type { V2Folder } from "../types";
 
 /** A dropdown that works without script: <details> opens, buttons submit `formId`. */
-function menu(name: string, label: string, iconName: string, key: string, body: Html): Html {
-	return html`<details class="menu" data-menu="${name}">
-		<summary class="icon-button" title="${`${label} (${key})`}" aria-label="${label}">${icon(iconName)}</summary>
+function menu(name: string, label: string, iconName: string, key: string | null, body: Html, className = ""): Html {
+	return html`<details class="${`menu ${className}`.trim()}" data-menu="${name}">
+		<summary class="icon-button" title="${key ? `${label} (${key})` : label}" aria-label="${label}">${icon(iconName)}</summary>
 		<div class="menu-panel" role="menu">${body}</div>
 	</details>`;
 }
@@ -20,6 +20,18 @@ export function moveMenu(formId: string, folders: V2Folder[]): Html {
 		${folders.length ? html`<div class="menu-sep"></div>` : ""}
 		${folders.map((folder) => html`<button class="menu-item" type="submit" form="${formId}" name="move" value="${`folder:${folder.id}`}" role="menuitem">${icon("folder")}${folder.name}</button>`)}
 	`);
+}
+
+export type MoreMenuItem = { value: string; label: string; icon: string };
+
+/**
+ * The phone toolbar's overflow: the same `action` buttons the wider toolbar shows inline
+ * (as `.tb-overflow`), as a sheet. Hidden from 900px up.
+ */
+export function moreMenu(formId: string, items: MoreMenuItem[]): Html {
+	return menu("more", "More actions", "more", null, html`
+		${items.map((item) => html`<button class="menu-item" type="submit" form="${formId}" name="action" value="${item.value}" role="menuitem">${icon(item.icon)}${item.label}</button>`)}
+	`, "tb-more");
 }
 
 /**

@@ -316,6 +316,8 @@ kbd {
 [data-page="list"] .tb-selected { display: none; }
 [data-page="list"].has-selection .tb-selected { display: flex; }
 [data-page="list"].has-selection .tb-idle { display: none; }
+/* Phones only: the actions marked .tb-overflow move into this sheet. */
+.tb-more { display: none; }
 
 /* ---------- list ---------- */
 
@@ -868,6 +870,14 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 	.list { overflow-x: hidden; }
 	.toolbar { overflow-x: auto; scrollbar-width: none; }
 	.toolbar::-webkit-scrollbar { display: none; }
+	/*
+	 * With rows selected the toolbar is all actions (#47): the pager goes, nothing shrinks under its
+	 * neighbours, and the less used actions (Report spam, Mark as read/unread) move into "More".
+	 */
+	[data-page="list"].has-selection .tb-pager { display: none; }
+	.toolbar .tb-select, [data-page="list"] .tb-selected { flex: none; }
+	.tb-selected .tb-overflow { display: none; }
+	.tb-more { display: block; }
 
 	/* Menus and message details open as bottom sheets over a scrim. */
 	.menu-panel {
@@ -891,6 +901,8 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 	.menu-item { min-height: 48px; }
 	body:has(#main details.menu[open]) .scrim,
 	body:has(#main .msg-details:not([hidden])) .scrim { display: block; position: fixed; inset: 0; z-index: 39; background: rgb(0 0 0 / .4); }
+	/* The compose button floats above everything else; it would cover the end of a sheet's last item. */
+	body:has(#main details.menu[open]) .fab { display: none; }
 	.msg-details:not([hidden]) {
 		position: fixed;
 		left: 0;
@@ -922,6 +934,11 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 	.app { height: calc(100dvh - var(--kb, 0px)); }
 }
 
+/* The narrowest phones show "3", not "3 selected", so every action still fits; screen readers still hear the word. */
+@media (max-width: 389px) {
+	.tb-count-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
 @media (max-width: 1199px) {
 	.attachments { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
 	.attachment { width: auto; min-width: 0; }
@@ -931,7 +948,7 @@ body.is-loading .progress { opacity: 1; transform: scaleX(.7); transition: trans
 @media (pointer: coarse) {
 	.icon-button, .toolbar .icon-button, .toolbar .tb-select, .row-star, .row-select { width: 44px; height: 44px; }
 	.cmp-head .icon-button, .cmp-foot .icon-button, .row-hover .icon-button { width: 44px; height: 44px; }
-	.button, .reply-chip { height: 44px; }
+	.button, .reply-chip, .menu-custom input { height: 44px; }
 	.menu-item, .nav-item { min-height: 44px; }
 	.row { touch-action: pan-y; }
 	/* Small visible controls keep their look but get a 44px hit area. */

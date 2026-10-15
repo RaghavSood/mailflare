@@ -557,3 +557,47 @@ test("toolbar buttons outside their form submit it with their own name and value
 		assert.ok(!first.includes(" hidden"), `${name}: ${first}`);
 	}
 });
+
+test("on a phone every list action fits: the pager hides while selecting and the rest go into More (#47)", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(join(root, "public/v2-assets/app.css"), "utf8");
+	const appJs = await readFile(join(root, "public/v2-assets/app.js"), "utf8");
+	const phone = css.slice(css.indexOf("/* ---------- touch: sheets, gestures, recipients ---------- */"));
+	const phoneBlock = phone.slice(phone.indexOf("@media (max-width: 899px) {"), phone.indexOf("@media (max-width: 1199px)"));
+	// What the markup below relies on, all of it inside the <900px rules so desktop and tablet keep their toolbar.
+	assert.match(phoneBlock, /\[data-page="list"\]\.has-selection \.tb-pager \{ display: none; \}/);
+	assert.match(phoneBlock, /\.tb-selected \.tb-overflow \{ display: none; \}/);
+	assert.match(phoneBlock, /\.tb-more \{ display: block; \}/);
+	assert.match(phoneBlock, /body:has\(#main details\.menu\[open\]\) \.fab \{ display: none; \}/, "the compose button stays off an open sheet");
+	assert.match(css, /\.has-selection \.tb-idle \{ display: none; \}\n(\/\*.*\*\/\n)?\.tb-more \{ display: none; \}/, "More is hidden outside phones, next to the other selection rules");
+	assert.match(phone, /@media \(max-width: 389px\) \{\s*\.tb-count-label \{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect\(0 0 0 0\);/, "the word is clipped, not removed");
+	assert.match(appJs, /className: "tb-count-label", textContent: " selected"/, "app.js writes the count as number + label");
+
+	const ctx = { user: { id: "usr_1", email: "me@example.com", name: "Me" }, url: new URL("https://mail.example.com/v2/inbox"), mailboxes: [], scopeMailboxIds: ["mbx_1"] };
+	const folders = [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }];
+	for (const view of ["inbox", "archive", "spam", "trash", "starred", "snoozed", "folder", "search", "all", "sent", "drafts"]) {
+		const markup = String(v2.renderListMain(ctx, {
+			view, title: view, folderId: view === "folder" ? "fld_1" : null, q: view === "search" ? "x" : "", page: { rows: [], total: 0, page: 1, pageSize: 50 }, folders, timeZone: "UTC", emptyText: "Nothing here.",
+		}));
+		assert.match(markup, /<div class="page" data-page="list"/, view);
+		const toolbar = markup.slice(markup.indexOf('<div class="toolbar"'), markup.indexOf('<form id="list-form"'));
+		assert.match(toolbar, /<div class="tb-pager">/, `${view}: the pager sits in the toolbar`);
+		const selected = toolbar.slice(toolbar.indexOf('<div class="tb-group tb-selected">'), toolbar.indexOf('<div class="tb-spacer">'));
+		const more = selected.match(/<details class="menu tb-more" data-menu="more">[\s\S]*?<\/details>/)?.[0];
+		assert.ok(more, `${view}: no More menu`);
+		const inline = selected.replace(/<details[\s\S]*?<\/details>/g, "");
+		const values = (markup, pattern) => [...markup.matchAll(pattern)].map((match) => match[1]);
+		const overflow = values(inline, /<button class="icon-button tb-overflow"[^>]*\svalue="([^"]+)"/g);
+		const shown = values(inline, /<button class="icon-button"[^>]*\svalue="([^"]+)"/g);
+		assert.deepEqual(values(more, /<button class="menu-item"[^>]*name="action" value="([^"]+)"/g), overflow, `${view}: More holds exactly the hidden actions`);
+		assert.ok(["read", "unread"].every((value) => overflow.includes(value)), `${view}: ${overflow}`);
+		assert.equal(overflow.includes("spam"), view !== "spam" && view !== "drafts", `${view}: spam`);
+		const menus = values(selected, /<details class="[^"]*" data-menu="([^"]+)"/g);
+		const canMove = view !== "sent" && view !== "drafts";
+		assert.deepEqual(menus, canMove ? ["snooze", "move", "more"] : ["more"], view);
+		// Select all, the count and at most five 44px controls fit 360px.
+		assert.ok(shown.length + menus.length <= 5, `${view}: ${shown} + ${menus}`);
+		assert.equal((markup.match(/data-menu="snooze"/g) ?? []).length, canMove ? 1 : 0, `${view}: one snooze menu`);
+		assert.equal((markup.match(/name="snoozeAt"/g) ?? []).length, canMove ? 1 : 0, `${view}: one snooze date field`);
+	}
+});

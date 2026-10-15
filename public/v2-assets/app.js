@@ -234,7 +234,8 @@
 		}
 		current.classList.toggle("has-selection", count > 0);
 		const counter = $("[data-selected-count]", current);
-		if (counter) counter.textContent = count ? `${count} selected` : "";
+		// The word is its own element so the narrowest phones can show just the number.
+		if (counter) counter.replaceChildren(...(count ? [String(count), Object.assign(document.createElement("span"), { className: "tb-count-label", textContent: " selected" })] : []));
 		const all = $("[data-select-all]", current);
 		if (all) {
 			all.checked = count > 0 && count === checks.length;
