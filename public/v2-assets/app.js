@@ -79,8 +79,8 @@
 	}
 
 	/** Swap #main with the page a request returns, like a boosted link. */
-	function load(verb, path, values) {
-		return window.htmx.ajax(verb, path, { target: "#main", select: "#main", swap: "outerHTML", values, source: body });
+	function load(verb, path, values, options) {
+		return window.htmx.ajax(verb, path, { target: "#main", select: "#main", swap: "outerHTML", values, source: body, ...options });
 	}
 
 	function navigate(href) {
@@ -106,8 +106,8 @@
 		if (isQuiet(event.detail.requestConfig)) return;
 		const raw = event.detail.xhr?.responseText || "Something went wrong.";
 		const text = raw.length > 200 ? "Something went wrong." : raw;
-		// A refused list action already changed the rows; reload them, then explain.
-		if (event.detail.requestConfig?.parameters?.partial === "1") refresh().then(() => toast(text));
+		// A refused list action already changed the rows; reload them.
+		if (event.detail.requestConfig?.parameters?.partial === "1") explainRefusal(text);
 		else toast(text);
 	});
 	document.addEventListener("htmx:sendError", (event) => {
@@ -280,7 +280,7 @@
 			.ajax("POST", "/v2/act", { target: "#toast", select: "#toast", swap: "outerHTML", values: data, source: body })
 			.then(() => {
 				// Refill a page that has emptied out.
-				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh();
+				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh({ keepToast: true });
 			}, () => {
 				/* Unreachable: htmx:sendError queued it or said so. */
 			});
@@ -1445,9 +1445,20 @@
 		if (href) navigate(href);
 	}
 
-	function refresh() {
+	/**
+	 * Reload the page shown. With keepToast the reload leaves #toast alone, so a toast shown
+	 * just before it survives: the page's own #toast is empty, and a reload queued behind the
+	 * request still in flight resolves at once, before it has even been sent (#38).
+	 */
+	function refresh({ keepToast = false } = {}) {
 		if (!navigator.onLine) return Promise.resolve();
-		return load("GET", `${location.pathname}${location.search}`);
+		return load("GET", `${location.pathname}${location.search}`, undefined, keepToast ? { selectOOB: "#nav" } : undefined);
+	}
+
+	/** The server refused something the page already showed as done: say why, and reload to show the truth. */
+	function explainRefusal(message) {
+		toast(message);
+		return refresh({ keepToast: true });
 	}
 
 	function undo() {
@@ -2258,9 +2269,8 @@
 				return result;
 			}
 			if (refused.length) {
-				// As for an action refused online: show the truth, then say why.
-				await refresh();
-				toast(refused[refused.length - 1]);
+				// As for an action refused online.
+				await explainRefusal(refused[refused.length - 1]);
 			} else if (result?.sent || refreshAfterDrain) {
 				refreshQuietly();
 			}
@@ -2522,11 +2532,12 @@
 	navigator.serviceWorker?.addEventListener("message", (event) => {
 		const data = event.data;
 		if (data?.type === "outbox-draft") applyDraftId(data.key, data.draftId);
-		else if (data?.type === "outbox-dropped") refresh().then(() => toast(data.message));
+		else if (data?.type === "outbox-dropped") explainRefusal(data.message);
 		else if (data?.type === "outbox-drained") {
 			updatePending();
 			if (data.result?.signedOut) signedOut();
-			else if (data.result?.sent) refreshQuietly();
+			// A refused entry has reloaded the page already (outbox-dropped); keep its message.
+			else if (data.result?.sent && !data.result.dropped) refreshQuietly();
 		}
 	});
 
@@ -2536,7 +2547,8 @@
 		updateConnectivity();
 		if (body.dataset.cachedAt) return syncCachedPage({ restart: true });
 		drainOutbox().then((result) => {
-			if (result && !result.sent && !refreshAfterDrain) refreshQuietly();
+			// A refused entry has reloaded the page already; another reload would take its message away.
+			if (result && !result.sent && !result.dropped && !refreshAfterDrain) refreshQuietly();
 		});
 	});
 	window.addEventListener("offline", () => {

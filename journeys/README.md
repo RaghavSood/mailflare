@@ -22,6 +22,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `16-act-inside-a-conversation` | Toolbar Move → Archive, Star and Snooze → Next week from inside a conversation, each checked in its view; Move → Archive queued offline and applied on reconnect |
 | `17-tablet-thread-actions` | Tablet band (the phone set to 1280×800 at density 200 for the journey, reset in teardown): a conversation opens beside its list, and its ⋮ dropdown and details respond to a tap made as quickly as adb allows after opening it (#31) |
 | `18-send-from-a-draft` | A draft opened from Drafts and sent: the address moves to the Drafts list, pull to refresh shows that list (not "Not found"), the message is in Sent |
+| `19-refused-list-action` | A list action the server refuses (Archive on a conversation moved to Trash meanwhile, picked by tapping its avatar): the list reloads and the server's reason stays shown (#38) |
 | `20-replay-after-a-slow-reconnect` | Outbox: Airplane mode turned off while the server is not reachable yet (the runner's relay keeps refusing it), the first replay fails, the page retries with backoff and the action lands once the server answers, with no reload (#42) |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.

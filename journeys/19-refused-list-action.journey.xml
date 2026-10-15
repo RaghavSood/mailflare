@@ -1,0 +1,14 @@
+<journey name="A refused list action says why">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with two newly delivered conversations at the top of the list. After the list was loaded, the first of them was moved to Trash from another device, so the list on screen is out of date.
+		List actions change the rows at once and the server only confirms. When it refuses one, the list is reloaded to show the truth (here the conversation stays gone, since it is in Trash) and the server's reason must be shown, and stay shown, rather than the row silently changing back (#38).
+	</description>
+	<actions>
+		<action>Tap the round picture with the sender's initials at the left of the first conversation in the inbox list</action>
+		<action>Verify that a check mark replaces that picture and the toolbar at the top reads "1 selected"</action>
+		<action>Tap the "Archive" button (box) in the toolbar</action>
+		<action>Verify that the inbox list is shown with a message reading "Nothing to change.", and that the conversation is no longer in the list</action>
+		<action>Wait 3 seconds</action>
+		<action>Verify that the message "Nothing to change." is still shown and the second new conversation is now at the top of the list</action>
+	</actions>
+</journey>
