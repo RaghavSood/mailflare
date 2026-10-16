@@ -5,6 +5,7 @@ import { KEYWORD_DRAFT, KEYWORD_FLAGGED, KEYWORD_SEEN } from "./constants";
 import { invalidArguments, unsupportedFilter } from "./errors";
 import { normalizeMessageId } from "@/lib/email/threading";
 import { decodeMailboxRef, roleToStatus } from "./ids";
+import { fitsLikePattern, jmapTextMatch } from "./email-query-utils";
 import type { Comparator, Filter, FilterCondition, MailboxRef } from "./types";
 
 /** The SQL predicate for "is in this JMAP Mailbox". */
@@ -38,6 +39,27 @@ function likeEscape(value: string): string {
 
 function likePattern(value: string): string {
 	return `%${likeEscape(value)}%`;
+}
+
+/**
+ * RFC 8621 §4.4.1 `text`: the FTS5 index the web search box uses (subject,
+ * from, to, cc and both bodies). Text with no letters or digits gives the
+ * index nothing to look up, so it keeps the substring match it always had,
+ * as long as the pattern fits D1's LIKE limit; longer such text matches nothing.
+ */
+function textCondition(text: string): SQL {
+	const match = jmapTextMatch(text);
+	if (match) return sql`${messages}.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ${match})`;
+	if (!fitsLikePattern(likeEscape(text))) return sql`0`;
+	const pattern = likePattern(text);
+	return or(
+		like(messages.subject, pattern),
+		like(messages.fromAddr, pattern),
+		like(messages.toAddr, pattern),
+		like(messages.ccAddr, pattern),
+		like(messages.textBody, pattern),
+		like(messages.snippet, pattern),
+	)!;
 }
 
 /**
@@ -94,19 +116,7 @@ function conditionToSql(condition: FilterCondition, accessible: Set<string>): SQ
 	if (condition.bcc) parts.push(like(messages.bccAddr, likePattern(condition.bcc)));
 	if (condition.subject) parts.push(like(messages.subject, likePattern(condition.subject)));
 	if (condition.body) parts.push(or(like(messages.textBody, likePattern(condition.body)), like(messages.htmlBody, likePattern(condition.body)))!);
-	if (condition.text) {
-		const pattern = likePattern(condition.text);
-		parts.push(
-			or(
-				like(messages.subject, pattern),
-				like(messages.fromAddr, pattern),
-				like(messages.toAddr, pattern),
-				like(messages.ccAddr, pattern),
-				like(messages.textBody, pattern),
-				like(messages.snippet, pattern),
-			)!,
-		);
-	}
+	if (condition.text) parts.push(textCondition(String(condition.text)));
 	if (condition.header) parts.push(headerCondition(condition.header));
 	if (condition.hasAttachment !== undefined) {
 		const hasOne = exists(

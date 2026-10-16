@@ -13,6 +13,7 @@ import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
 import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
 import { importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
+import { QUERY_WINDOW, describeEmailQueryShape, planEmailQueryPage, queryLimit, windowedPage } from "./email-query-utils";
 import { currentSeq, exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
 import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
 import { getEmailState, refreshEmailState } from "./state";
@@ -108,17 +109,22 @@ export const emailGet: JmapMethodHandler = async (ctx, args) => {
 	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: ids.filter((id) => !found.has(id)) };
 };
 
-/**
- * The ordered id list a query describes. Anchors and positions are resolved by
- * materialising it up to a bound; mailboxes here are small enough that this
- * stays cheap. `Email/query` and `Email/queryChanges` share it so both see
- * the same order.
- */
-async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
+/** The WHERE and ORDER BY an Email/query's filter and sort describe, within the accessible mailboxes. */
+async function emailQueryParts(ctx: JmapContext, args: Record<string, unknown>) {
 	const { ids: accessibleIds, condition } = await scope(ctx);
 	const filter = filterToSql(args.filter as Filter | null | undefined, new Set(accessibleIds));
 	const where = filter ? and(condition, filter) : condition;
 	const order = sortToSql(args.sort as Comparator[] | null | undefined);
+	return { where, order, condition, accessibleIds };
+}
+
+/**
+ * The ordered id list a query describes, materialised up to QUERY_WINDOW.
+ * Anchors, negative positions and collapseThreads need the whole list;
+ * `Email/queryChanges` shares it so both see the same order.
+ */
+async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
+	const { where, order, condition, accessibleIds } = await emailQueryParts(ctx, args);
 	const collapse = !!args.collapseThreads;
 	const threadKey = sql<string>`coalesce(${messages.threadId}, ${messages.id})`;
 	const allRows = await ctx.db
@@ -126,7 +132,7 @@ async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
 		.from(messages)
 		.where(where)
 		.orderBy(...order)
-		.limit(10_000);
+		.limit(QUERY_WINDOW);
 	let ordered = allRows.map((row) => row.id);
 	if (collapse) {
 		const seen = new Set<string>();
@@ -135,9 +141,39 @@ async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
 	return { ordered, collapse, condition, accessibleIds };
 }
 
+/**
+ * A plain page (no anchor, no collapseThreads, position >= 0) is read with
+ * LIMIT/OFFSET in the same ORDER BY, so only that page leaves the database;
+ * the total is a count(*) run only when asked for. Both stop at
+ * QUERY_WINDOW, as the materialised list does.
+ */
+async function pageEmailQuery(ctx: JmapContext, args: Record<string, unknown>, page: { position: number; limit: number }) {
+	const { where, order } = await emailQueryParts(ctx, args);
+	const bounds = windowedPage(page);
+	const [rows, counted] = await Promise.all([
+		bounds ? ctx.db.select({ id: messages.id }).from(messages).where(where).orderBy(...order).limit(bounds.limit).offset(bounds.offset) : [],
+		args.calculateTotal ? ctx.db.select({ total: count() }).from(messages).where(where) : null,
+	]);
+	return { ids: rows.map((row) => row.id), total: counted ? Math.min(counted[0]?.total ?? 0, QUERY_WINDOW) : undefined };
+}
+
 export const emailQuery: JmapMethodHandler = async (ctx, args) => {
+	const page = planEmailQueryPage(args);
+	console.debug("JMAP Email/query", JSON.stringify(describeEmailQueryShape(args, !!page)));
+	if (page) {
+		const { ids, total } = await pageEmailQuery(ctx, args, page);
+		return {
+			accountId: ctx.accountId,
+			queryState: await getEmailState(ctx),
+			canCalculateChanges: true,
+			position: page.position,
+			ids,
+			...(total !== undefined ? { total } : {}),
+		};
+	}
+
 	const { ordered } = await runEmailQuery(ctx, args);
-	const limit = Math.min(Math.max(Number(args.limit ?? LIMITS.maxQueryLimit), 0), LIMITS.maxQueryLimit);
+	const limit = queryLimit(args.limit);
 	let position = Number(args.position ?? 0);
 	if (args.anchor) {
 		const index = ordered.indexOf(String(args.anchor));
@@ -145,14 +181,14 @@ export const emailQuery: JmapMethodHandler = async (ctx, args) => {
 		position = index + Number(args.anchorOffset ?? 0);
 	}
 	if (position < 0) position = Math.max(ordered.length + position, 0);
-	const page = ordered.slice(position, position + limit);
+	const slice = ordered.slice(position, position + limit);
 
 	return {
 		accountId: ctx.accountId,
 		queryState: await getEmailState(ctx),
 		canCalculateChanges: true,
 		position,
-		ids: page,
+		ids: slice,
 		...(args.calculateTotal ? { total: ordered.length } : {}),
 	};
 };
