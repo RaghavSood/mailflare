@@ -54,14 +54,20 @@
 	}
 
 	let toastTimer = 0;
+	/** The toast the timer runs for: a reload that keeps it on screen does not start its time again. */
+	let timedToast = null;
 	function scheduleToastHide() {
-		clearTimeout(toastTimer);
 		const region = $("#toast");
-		if (!region || !region.querySelector(".toast")) return;
+		const shown = region?.querySelector(".toast");
+		if (!shown || shown === timedToast) return;
+		clearTimeout(toastTimer);
+		timedToast = shown;
 		region.classList.remove("is-leaving");
 		toastTimer = setTimeout(() => {
 			region.classList.add("is-leaving");
 			setTimeout(() => {
+				// A new toast took its place while it was leaving.
+				if (region.querySelector(".toast") !== shown) return;
 				region.innerHTML = "";
 				region.classList.remove("has-toast", "is-leaving");
 			}, 220);
@@ -79,8 +85,23 @@
 	}
 
 	/** Swap #main with the page a request returns, like a boosted link. */
-	function load(verb, path, values) {
-		return window.htmx.ajax(verb, path, { target: "#main", select: "#main", swap: "outerHTML", values, source: body });
+	function load(verb, path, values, options) {
+		return window.htmx.ajax(verb, path, { target: "#main", select: "#main", swap: "outerHTML", values, source: body, ...options });
+	}
+
+	/** Requests the page makes on its own carry this header: if they cannot reach the server, they say nothing (#44). */
+	const BACKGROUND_HEADER = "X-Mailflare-Background";
+	const BACKGROUND = { [BACKGROUND_HEADER]: "1" };
+	const isBackground = (config) => config?.headers?.[BACKGROUND_HEADER] === "1";
+
+	/**
+	 * Reload the page shown. The reload leaves #toast alone: a page fetched with GET never
+	 * carries a toast, so the one on screen (a confirmation, an Undo) stays (#48), and a
+	 * reload queued behind the request still in flight resolves at once, before it has even
+	 * been sent (#38).
+	 */
+	function reload({ background = false } = {}) {
+		return load("GET", `${location.pathname}${location.search}`, undefined, background ? { selectOOB: "#nav", headers: BACKGROUND } : { selectOOB: "#nav" });
 	}
 
 	function navigate(href) {
@@ -102,13 +123,19 @@
 	});
 	document.addEventListener("htmx:afterRequest", () => body.classList.remove("is-loading"));
 	document.addEventListener("htmx:responseError", (event) => {
+		// A cached copy's quiet reload retries on its own; the page's other background requests are only refreshes.
+		if (isQuiet(event.detail.requestConfig) || isBackground(event.detail.requestConfig)) return;
 		const raw = event.detail.xhr?.responseText || "Something went wrong.";
 		const text = raw.length > 200 ? "Something went wrong." : raw;
-		// A refused list action already changed the rows; reload them, then explain.
-		if (event.detail.requestConfig?.parameters?.partial === "1") refresh().then(() => toast(text));
+		// A refused list action already changed the rows; reload them.
+		if (event.detail.requestConfig?.parameters?.partial === "1") explainRefusal(text);
 		else toast(text);
 	});
-	document.addEventListener("htmx:sendError", () => toast("You appear to be offline."));
+	document.addEventListener("htmx:sendError", (event) => {
+		if (isQuiet(event.detail.requestConfig)) return;
+		if (handleOfflineFailure(event.detail)) return;
+		toast("You appear to be offline.");
+	});
 
 	/* ---------- page setup after every swap ---------- */
 
@@ -207,7 +234,8 @@
 		}
 		current.classList.toggle("has-selection", count > 0);
 		const counter = $("[data-selected-count]", current);
-		if (counter) counter.textContent = count ? `${count} selected` : "";
+		// The word is its own element so the narrowest phones can show just the number.
+		if (counter) counter.replaceChildren(...(count ? [String(count), Object.assign(document.createElement("span"), { className: "tb-count-label", textContent: " selected" })] : []));
 		const all = $("[data-select-all]", current);
 		if (all) {
 			all.checked = count > 0 && count === checks.length;
@@ -274,7 +302,9 @@
 			.ajax("POST", "/v2/act", { target: "#toast", select: "#toast", swap: "outerHTML", values: data, source: body })
 			.then(() => {
 				// Refill a page that has emptied out.
-				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh();
+				if (leavesList(values, view) && rows().length < 10 && (page()?.dataset.next || rows().length === 0)) refresh({ background: true });
+			}, () => {
+				/* Unreachable: htmx:sendError queued it or said so. */
 			});
 	}
 
@@ -340,7 +370,12 @@
 				button.classList.toggle("is-starred", !on);
 				toast("Couldn't update the star.");
 			}
-		});
+		}, () => queueOffline("act", [...data]).then((queued) => {
+			if (!queued) {
+				button.classList.toggle("is-starred", !on);
+				toast("Couldn't update the star.");
+			}
+		}));
 	}
 
 	function openMenu(name) {
@@ -485,6 +520,651 @@
 	}
 	window.addEventListener("resize", () => $$("iframe.mail-frame").forEach(sizeFrame));
 
+	/* ---------- touch: sheets, swipe, pull to refresh, recipients, split pane ---------- */
+
+	/* pure:start (DOM-free; tests/v2-touch.test.mjs and tests/v2-realtime.test.mjs run this block on their own) */
+
+	/** The action a horizontal swipe commits to, or null to snap the row back. */
+	function swipeOutcome(dx, width, actions) {
+		const action = dx > 0 ? actions.right : actions.left;
+		if (!action || !width) return null;
+		return Math.abs(dx) >= width * 0.35 ? action : null;
+	}
+
+	/** Split typed recipients into finished entries and the part still being typed. */
+	function splitRecipients(text) {
+		const done = [];
+		let current = "";
+		let quoted = false;
+		let angle = false;
+		for (const char of text) {
+			if (char === "\"") quoted = !quoted;
+			else if (char === "<" && !quoted) angle = true;
+			else if (char === ">" && !quoted) angle = false;
+			if ((char === "," || char === ";") && !quoted && !angle) {
+				if (current.trim()) done.push(current.trim());
+				current = "";
+				continue;
+			}
+			current += char;
+		}
+		return { done, rest: current.replace(/^\s+/, "") };
+	}
+
+	/** A finished address: a bare email, or a display name with an address in angle brackets. */
+	function isCompleteAddress(text) {
+		const value = text.trim();
+		return /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/.test(value) || /<[^\s@<>]+@[^\s@<>]+>$/.test(value);
+	}
+
+	/** The name and address to show for one recipient entry. */
+	function parseRecipient(text) {
+		const match = text.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+		if (match) return { name: match[1].trim(), email: match[2].trim() };
+		return { name: "", email: text.trim() };
+	}
+
+	/**
+	 * Why Send has to wait, as { field, message }, or null: To needs an entry, and every entry in
+	 * [[name, value], ...] must be an address. A stray "@" is not a recipient (#53).
+	 * recipientProblem in src/lib/v2/data/compose-utils.ts is the server's copy of this rule.
+	 */
+	function recipientProblem(fields) {
+		for (const [field, value] of fields) {
+			const entries = splitRecipients(`${value ?? ""},`).done;
+			const bad = entries.find((entry) => !/^[^\s@<>",;]+@[^\s@<>",;]+$/.test(parseRecipient(entry).email));
+			if (bad) return { field, message: `"${bad}" isn't an email address.` };
+			if (field === "to" && !entries.length) return { field, message: "Add at least one recipient." };
+		}
+		return null;
+	}
+
+	/** Keep one history entry while a sheet or the drawer is open: push it, drop it once nothing is open, or leave it. */
+	function sheetHistoryStep(open, onEntry, busy) {
+		if (open && !onEntry) return "push";
+		if (!open && onEntry && !busy) return "back";
+		return null;
+	}
+
+	/** What a popstate means for sheets; null hands it to htmx's history restore. */
+	function sheetPopstate({ fromEntry, toEntry, samePage, open, canGoForward }) {
+		// Forward onto an entry whose sheet has since closed: step over it.
+		if (toEntry) return open ? "stay" : canGoForward ? "forward" : "back";
+		if (!fromEntry) return null;
+		// Back from a sheet's entry stays on the page; a jump further back also restores that page.
+		return samePage ? "close" : "close-restore";
+	}
+
+	/** "Switch to classic" for the page shown; renderNav and renderTopbar build the same link. */
+	function classicSwitchHref(pathname) {
+		return `/v2/switch?to=classic&from=${encodeURIComponent(pathname)}`;
+	}
+
+	/**
+	 * What the realtime socket does on an event: "hidden" or "visible" (the page),
+	 * "lost" (the socket closed by itself) or "retry" (its reconnect timer). The
+	 * server sends a push notification only to a user with no open socket, so the
+	 * socket is open only while the page is shown; a page shown again reconnects
+	 * and catches up on what it missed.
+	 */
+	function realtimeStep(event, { visible, socket, attempt = 0 }) {
+		if (event === "hidden") return { close: socket };
+		if (event === "visible") return { connect: !socket, catchUp: true };
+		if (event === "lost") return visible ? { retryIn: Math.min(1000 * 2 ** attempt, 30000) } : {};
+		if (event === "retry") return { connect: visible && !socket };
+		return {};
+	}
+
+	/**
+	 * Whether the answer to a background request (a quiet reload, a sidebar poll) is stale: it
+	 * re-renders the page it was sent from, so once the address has changed, or another page has
+	 * started loading since it was sent or is loading now (a link, a notification opened), swapping
+	 * it in would put the old page back, and would drop the loading page's link with its answer.
+	 */
+	function staleBackgroundAnswer(sentFrom, now) {
+		return now.loading > 0 || sentFrom.href !== now.href || sentFrom.navigations !== now.navigations;
+	}
+
+	/* pure:end */
+
+	const coarsePointer = window.matchMedia("(pointer: coarse)");
+	const narrowScreen = window.matchMedia("(max-width: 899px)");
+	const tabletBand = window.matchMedia("(min-width: 900px) and (max-width: 1199px)");
+
+	function onTouchPage() {
+		setupPullToRefresh();
+		setupSplitList();
+		setupRecipientChips(document);
+	}
+	document.addEventListener("DOMContentLoaded", onTouchPage);
+	if (document.readyState !== "loading") queueMicrotask(onTouchPage);
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id === "main") onTouchPage();
+	});
+	document.addEventListener("htmx:load", (event) => setupRecipientChips(event.detail.elt));
+	tabletBand.addEventListener("change", () => setupSplitList());
+
+	// The scrim under a details sheet closes it; menus already close on any outside click.
+	document.addEventListener("click", (event) => {
+		if (!narrowScreen.matches || !(event.target instanceof Element) || !event.target.closest(".scrim")) return;
+		$$("#main .msg-details:not([hidden])").forEach((panel) => (panel.hidden = true));
+	});
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || !narrowScreen.matches) return;
+		const open = $$("#main .msg-details:not([hidden])");
+		if (!open.length) return;
+		open.forEach((panel) => (panel.hidden = true));
+		event.stopImmediatePropagation();
+	}, true);
+
+	/* Back closes a sheet or the drawer on phones. Opening one pushes an entry for the
+	   same URL; Back pops it and only closes. Closing any other way (X, scrim, Escape, an
+	   item) steps back off the entry, and a boosted navigation takes the entry over, so
+	   none are left behind. Wider screens never get an entry. */
+
+	let onSheetEntry = false;
+	let sheetHref = "";
+	let sheetBackPending = false;
+	let htmxRequests = 0;
+
+	const sheetOpen = () => narrowScreen.matches && (body.classList.contains("nav-open") || !!$("#main details.menu[open], #main .msg-details:not([hidden])"));
+
+	function closeSheets() {
+		closeNav();
+		closeMenus();
+		$$("#main .msg-details:not([hidden])").forEach((panel) => (panel.hidden = true));
+	}
+
+	function syncSheetHistory() {
+		// Wait for requests in flight: one may still put a page into this entry.
+		const step = sheetHistoryStep(sheetOpen(), onSheetEntry, sheetBackPending || htmxRequests > 0);
+		if (step === "push") {
+			// htmx marks the page's own entry for restoring when it navigates away; once the
+			// sheet's entry is on top it would mark that one instead, so mark the page's now.
+			if (!history.state?.htmx) history.replaceState({ htmx: true }, "");
+			history.pushState({ mfSheet: true }, "");
+			onSheetEntry = true;
+			sheetHref = location.href;
+		} else if (step === "back") {
+			sheetBackPending = true;
+			history.back();
+		}
+	}
+
+	/** Returns true when the popstate was only about a sheet, so htmx must not restore the page. */
+	function onSheetPopstate(event) {
+		const action = sheetPopstate({
+			fromEntry: onSheetEntry,
+			toEntry: event.state?.mfSheet === true,
+			samePage: location.href === sheetHref,
+			open: sheetOpen(),
+			canGoForward: window.navigation?.canGoForward === true,
+		});
+		sheetBackPending = false;
+		if (action === null) return false;
+		if (action === "close" || action === "close-restore") {
+			onSheetEntry = false;
+			closeSheets();
+			return action === "close";
+		}
+		onSheetEntry = true;
+		sheetHref = location.href;
+		if (action === "forward") history.forward();
+		else if (action === "back") {
+			sheetBackPending = true;
+			history.back();
+		}
+		return true;
+	}
+
+	function setupSheetHistory() {
+		// htmx sets window.onpopstate (its history restore) from a DOMContentLoaded listener
+		// added before this one, so wrap it there; a deferred script runs too early.
+		const restore = window.onpopstate;
+		window.onpopstate = (event) => {
+			if (!onSheetPopstate(event)) restore?.call(window, event);
+		};
+		onSheetEntry = history.state?.mfSheet === true;
+		sheetHref = location.href;
+		syncSheetHistory();
+		new MutationObserver(syncSheetHistory).observe(body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "open", "hidden"] });
+	}
+	if (document.readyState === "complete") setupSheetHistory();
+	else document.addEventListener("DOMContentLoaded", setupSheetHistory);
+	narrowScreen.addEventListener("change", syncSheetHistory);
+	window.addEventListener("pageshow", (event) => {
+		if (!event.persisted) return;
+		onSheetEntry = history.state?.mfSheet === true;
+		sheetHref = location.href;
+		syncSheetHistory();
+	});
+
+	document.addEventListener("htmx:beforeSend", (event) => {
+		const xhr = event.detail.xhr;
+		if (!xhr) return;
+		htmxRequests++;
+		xhr.addEventListener("loadend", () => {
+			htmxRequests--;
+			setTimeout(syncSheetHistory, 0);
+		}, { once: true });
+	});
+
+	// A page opened from a sheet replaces the sheet's entry instead of stacking on it.
+	document.addEventListener("htmx:beforeHistoryUpdate", (event) => {
+		const update = event.detail.history;
+		if (!onSheetEntry || !update?.type) return;
+		update.type = "replace";
+		onSheetEntry = false;
+		closeSheets();
+	});
+
+	/* Back and Forward. htmx restores only #main (hx-history-elt), and it cuts the page
+	   it fetches down to #main before any out-of-band swap, so #nav would stay on the
+	   page Back left. historyCacheSize is 0, so every restore fetches the whole page:
+	   take #nav from that same response rather than asking the server again. */
+
+	/** The topbar's "Classic" link sits outside #nav and #main, so no swap updates it. */
+	function syncClassicLinks() {
+		const href = classicSwitchHref(location.pathname);
+		$$('a[href^="/v2/switch?to=classic"]').forEach((link) => link.setAttribute("href", href));
+	}
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id === "main") syncClassicLinks();
+	});
+
+	document.addEventListener("htmx:historyRestore", (event) => {
+		const response = event.detail.serverResponse;
+		const nav = typeof response === "string" ? new DOMParser().parseFromString(response, "text/html").getElementById("nav") : null;
+		// A sign-in page or an error has no #nav: keep the one shown.
+		if (nav) window.htmx.swap("#nav", nav.outerHTML, { swapStyle: "outerHTML", ignoreTitle: true });
+		syncClassicLinks();
+	});
+
+	// A restore that cannot reach the server would leave the page Back left under the
+	// new URL; load it in full instead, which the service worker answers from its cache.
+	document.addEventListener("htmx:historyCacheMiss", (event) => {
+		event.detail.xhr?.addEventListener("error", () => location.reload(), { once: true });
+	});
+
+	// The same for full-page links (Settings, Switch to classic).
+	document.addEventListener("click", (event) => {
+		if (!onSheetEntry || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+		if (!link || link.target || link.hasAttribute("download") || link.origin !== location.origin) return;
+		event.preventDefault();
+		location.replace(link.href);
+	});
+
+	/* Swipe a list row right to archive (or move back to the Inbox) and left to delete,
+	   using the same actions as the row's hover buttons, so each view keeps its rules. */
+
+	const SWIPE_LABELS = { archive: "Archive", inbox: "Move to Inbox", trash: "Delete" };
+	let swipe = null;
+	let swallowClickUntil = 0;
+
+	function rowSwipeActions(row) {
+		const actions = $$(".row-hover [data-row-action]", row).map((button) => button.dataset.rowAction);
+		return {
+			right: actions.find((action) => action === "archive" || action === "inbox") ?? null,
+			left: actions.includes("trash") ? "trash" : null,
+		};
+	}
+
+	function paintSwipe(row, dx, action) {
+		row.classList.add("is-swiping");
+		row.style.transform = `translateX(${dx}px)`;
+		row.style.setProperty("--swipe-x", `${dx}px`);
+		row.dataset.swipeDir = dx > 0 ? "right" : "left";
+		row.dataset.swipeAction = action ?? "";
+		row.dataset.swipeLabel = SWIPE_LABELS[action] ?? "";
+	}
+
+	function clearSwipe(row) {
+		row.classList.remove("is-swiping", "is-armed", "is-settling");
+		row.style.removeProperty("transform");
+		row.style.removeProperty("--swipe-x");
+		delete row.dataset.swipeDir;
+		delete row.dataset.swipeAction;
+		delete row.dataset.swipeLabel;
+	}
+
+	document.addEventListener("touchstart", (event) => {
+		swipe = null;
+		if (event.touches.length !== 1 || pageKind() !== "list" || !(event.target instanceof Element)) return;
+		const row = event.target.closest("#main .page [data-row]");
+		if (!row || event.target.closest(".row-hover")) return;
+		const actions = rowSwipeActions(row);
+		if (!actions.left && !actions.right) return;
+		const touch = event.touches[0];
+		swipe = { row, actions, x: touch.clientX, y: touch.clientY, dx: 0, axis: null, width: row.offsetWidth };
+	}, { passive: true });
+
+	document.addEventListener("touchmove", (event) => {
+		if (!swipe || event.touches.length !== 1) return;
+		const touch = event.touches[0];
+		const dx = touch.clientX - swipe.x;
+		const dy = touch.clientY - swipe.y;
+		if (!swipe.axis) {
+			if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+			swipe.axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? "x" : "y";
+		}
+		if (swipe.axis !== "x") return;
+		const action = dx > 0 ? swipe.actions.right : swipe.actions.left;
+		// A direction with nothing to do only gives a little, then stops.
+		swipe.dx = action ? dx : Math.max(-24, Math.min(24, dx / 4));
+		paintSwipe(swipe.row, swipe.dx, action);
+		swipe.row.classList.toggle("is-armed", swipeOutcome(swipe.dx, swipe.width, swipe.actions) !== null);
+	}, { passive: true });
+
+	function endSwipe() {
+		const current = swipe;
+		swipe = null;
+		if (!current || current.axis !== "x") return;
+		const { row, dx, width } = current;
+		swallowClickUntil = Date.now() + 400;
+		const action = swipeOutcome(dx, width, current.actions);
+		row.classList.add("is-settling");
+		if (action) {
+			paintSwipe(row, dx > 0 ? width : -width, action);
+			setTimeout(() => {
+				actOnList({ action }, [row.dataset.id]);
+				// Views where the conversation stays (All mail, Starred) get the row back.
+				if (row.isConnected) clearSwipe(row);
+			}, 180);
+		} else {
+			paintSwipe(row, 0, null);
+			setTimeout(() => clearSwipe(row), 200);
+		}
+	}
+	document.addEventListener("touchend", endSwipe, { passive: true });
+	document.addEventListener("touchcancel", endSwipe, { passive: true });
+
+	// A swipe must not also open the conversation.
+	document.addEventListener("click", (event) => {
+		if (Date.now() > swallowClickUntil || !(event.target instanceof Element) || !event.target.closest("[data-row]")) return;
+		event.preventDefault();
+		event.stopPropagation();
+	}, true);
+
+	/* Pull a list down from the top to reload it. The list scrolls inside a fixed shell,
+	   so the browser's own pull-to-refresh never fires. */
+
+	const PULL_TRIGGER = 64;
+
+	function setupPullToRefresh() {
+		const list = $("#main .page[data-page=list] .list");
+		if (!list || list.dataset.ptr || !coarsePointer.matches) return;
+		list.dataset.ptr = "1";
+		let start = null;
+		let pull = 0;
+		let indicator = null;
+		const setPull = (value) => {
+			pull = value;
+			if (!indicator) {
+				indicator = document.createElement("div");
+				indicator.className = "ptr";
+				indicator.setAttribute("aria-hidden", "true");
+				const glyph = $("#main .toolbar a[aria-label=Refresh] svg");
+				if (glyph) indicator.append(glyph.cloneNode(true));
+				list.prepend(indicator);
+			}
+			list.classList.toggle("is-pulling", value > 0);
+			list.style.setProperty("--ptr", `${value}px`);
+			indicator.classList.toggle("is-armed", value >= PULL_TRIGGER);
+		};
+		list.addEventListener("touchstart", (event) => {
+			start = list.scrollTop <= 0 && event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+		}, { passive: true });
+		list.addEventListener("touchmove", (event) => {
+			if (!start) return;
+			// A row swipe won this gesture: let go of the pull entirely.
+			if (swipe?.axis === "x") {
+				if (pull) setPull(0);
+				start = null;
+				return;
+			}
+			const dy = event.touches[0].clientY - start.y;
+			const dx = event.touches[0].clientX - start.x;
+			if (pull === 0) {
+				if (dy < 0 || list.scrollTop > 0) start = null;
+				// Same axis rule as the swipe, so a diagonal drag is one gesture or the other.
+				if (!start || dy < 10 || dy <= Math.abs(dx) * 1.3) return;
+			}
+			event.preventDefault();
+			setPull(Math.max(0, Math.min(96, (dy - 10) * 0.5)));
+		}, { passive: false });
+		const release = () => {
+			if (!start) return;
+			start = null;
+			if (pull < PULL_TRIGGER) return setPull(0);
+			indicator.classList.add("is-refreshing");
+			setPull(PULL_TRIGGER);
+			// The reload swaps the list out; if it fails, put the list back.
+			Promise.resolve(refresh()).finally(() => {
+				if (!list.isConnected) return;
+				indicator.classList.remove("is-refreshing");
+				setPull(0);
+			});
+		};
+		list.addEventListener("touchend", release, { passive: true });
+		list.addEventListener("touchcancel", release, { passive: true });
+	}
+
+	/* On the tablet band a conversation opens beside its list. The thread page does not
+	   carry the list, so fetch it (cached per list URL) into a pane beside the page. */
+
+	const splitLists = new Map();
+
+	function markCurrentRow(pane, scroll) {
+		let current = null;
+		for (const row of $$("[data-row]", pane)) {
+			const here = new URL(row.dataset.href, location.href).pathname === location.pathname;
+			row.classList.toggle("is-current", here);
+			if (here) current = row;
+		}
+		if (scroll && current && (current.offsetTop < pane.scrollTop || current.offsetTop + current.offsetHeight > pane.scrollTop + pane.clientHeight)) {
+			pane.scrollTop = current.offsetTop - pane.clientHeight / 3;
+		}
+	}
+
+	async function setupSplitList() {
+		const main = $("#main");
+		const current = page();
+		if (!main || current?.dataset.page !== "thread" || !tabletBand.matches) return;
+		const href = current.dataset.list;
+		if (!href || $(":scope > .split-list", main)) return;
+		const pane = document.createElement("aside");
+		pane.className = "split-list";
+		pane.setAttribute("aria-label", "Conversations");
+		main.prepend(pane);
+		let shown = false;
+		const show = (markup) => {
+			pane.innerHTML = markup;
+			window.htmx.process(pane);
+			markCurrentRow(pane, !shown);
+			shown = true;
+		};
+		if (splitLists.has(href)) show(splitLists.get(href));
+		try {
+			const response = await fetch(href, { headers: { Accept: "text/html" } });
+			if (!response.ok) return;
+			const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+			const list = doc.querySelector("#main .rows");
+			if (!list) return;
+			// The pane only opens conversations; selection, stars and row actions stay on the list page.
+			list.querySelectorAll(".row-select, .row-star, .row-hover").forEach((element) => element.remove());
+			splitLists.set(href, list.outerHTML);
+			if (pane.isConnected) show(list.outerHTML);
+		} catch {
+			/* The pane is a convenience; the thread works without it. */
+		}
+	}
+
+	/* Recipient chips on touch screens: finished addresses become chips, and contact
+	   suggestions open as a tappable list under the field instead of a datalist that
+	   on-screen keyboards hide. A hidden input keeps the field's name, so drafts,
+	   sending and validation read the same comma-separated value as before. */
+
+	let contactObserver = null;
+
+	function setupRecipientChips(root) {
+		if (!coarsePointer.matches || !(root instanceof Element || root instanceof Document)) return;
+		$$("[data-composer] input[data-recipients]", root).forEach(enhanceRecipients);
+		const datalist = $("#v2-contacts");
+		if (datalist && !contactObserver) {
+			// suggestContacts fills the shared datalist; mirror it for the focused field.
+			contactObserver = new MutationObserver(() => document.activeElement?.recipientSuggest?.(datalist));
+			contactObserver.observe(datalist, { childList: true });
+		}
+	}
+
+	function enhanceRecipients(input) {
+		if (input.dataset.chips || !input.name) return;
+		input.dataset.chips = "1";
+		const field = input.closest(".cmp-field");
+		const form = input.form;
+		const hidden = document.createElement("input");
+		hidden.type = "hidden";
+		hidden.name = input.name;
+		input.removeAttribute("name");
+		input.removeAttribute("list");
+		input.required = false;
+		const chips = document.createElement("span");
+		chips.className = "rcpt-chips";
+		const suggest = document.createElement("ul");
+		suggest.className = "rcpt-suggest";
+		suggest.setAttribute("role", "listbox");
+		suggest.hidden = true;
+		input.before(chips);
+		input.after(hidden);
+		// What to focus when the field needs attention (Send with no recipient).
+		hidden.recipientInput = input;
+		field?.append(suggest);
+		const removeGlyph = $("[data-cmp-close] svg", form);
+		const addresses = splitRecipients(`${input.value},`).done;
+		input.value = "";
+
+		const sync = () => {
+			hidden.value = [...addresses, input.value.trim()].filter(Boolean).join(", ");
+		};
+		const render = () => {
+			chips.replaceChildren(...addresses.map((address, index) => {
+				const { name, email } = parseRecipient(address);
+				const chip = document.createElement("span");
+				chip.className = "rcpt-chip";
+				chip.title = email;
+				const label = document.createElement("span");
+				label.textContent = name || email;
+				const remove = document.createElement("button");
+				remove.type = "button";
+				remove.className = "rcpt-remove";
+				remove.setAttribute("aria-label", `Remove ${name || email}`);
+				if (removeGlyph) remove.append(removeGlyph.cloneNode(true));
+				else remove.textContent = "×";
+				remove.addEventListener("click", () => {
+					addresses.splice(index, 1);
+					changed();
+					input.focus();
+				});
+				chip.append(label, remove);
+				return chip;
+			}));
+			sync();
+		};
+		// Let the composer's own listeners (autosave) see every change.
+		const changed = () => {
+			render();
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		};
+		const hideSuggestions = () => {
+			suggest.hidden = true;
+			suggest.replaceChildren();
+		};
+		const take = (text) => {
+			addresses.push(text.trim());
+			input.value = "";
+			hideSuggestions();
+			changed();
+		};
+		input.recipientSuggest = (datalist) => {
+			const typed = input.value.trim();
+			const options = Array.from(datalist.options).map((option) => option.value).filter((value) => value && !addresses.includes(value));
+			if (typed.length < 2 || !options.length) return hideSuggestions();
+			suggest.replaceChildren(...options.slice(0, 8).map((value) => {
+				const { name, email } = parseRecipient(value);
+				const item = document.createElement("li");
+				item.setAttribute("role", "option");
+				const button = document.createElement("button");
+				button.type = "button";
+				button.className = "rcpt-option";
+				const title = document.createElement("span");
+				title.textContent = name || email;
+				button.append(title);
+				if (name) {
+					const detail = document.createElement("small");
+					detail.textContent = email;
+					button.append(detail);
+				}
+				// Keep focus (and the keyboard) in the field while a suggestion is tapped.
+				button.addEventListener("pointerdown", (event) => event.preventDefault());
+				button.addEventListener("click", () => {
+					take(value);
+					input.focus();
+				});
+				item.append(button);
+				return item;
+			}));
+			suggest.hidden = false;
+		};
+
+		input.addEventListener("input", (event) => {
+			if (!event.isTrusted) return sync();
+			const { done, rest } = splitRecipients(input.value);
+			if (done.length) {
+				addresses.push(...done);
+				input.value = rest;
+				render();
+			} else {
+				sync();
+			}
+			if (input.value.trim().length < 2) hideSuggestions();
+		});
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				// Enter would submit the form, which sends the message.
+				event.preventDefault();
+				if (input.value.trim()) take(input.value);
+				else $("[data-cmp-subject]", form)?.focus();
+			} else if (event.key === "Backspace" && !input.value && addresses.length) {
+				event.preventDefault();
+				input.value = addresses.pop();
+				changed();
+			}
+		});
+		input.addEventListener("blur", () => {
+			hideSuggestions();
+			if (isCompleteAddress(input.value)) take(input.value);
+		});
+		render();
+	}
+
+	/* The on-screen keyboard covers the bottom of the layout viewport on iOS; expose its
+	   height as --kb so the composer keeps Send above it. Chrome resizes the page itself
+	   (interactive-widget=resizes-content), so there the inset stays 0. */
+
+	function trackKeyboard() {
+		const viewport = window.visualViewport;
+		if (!viewport) return;
+		const update = () => {
+			const inset = viewport.scale > 1.01 ? 0 : Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+			document.documentElement.style.setProperty("--kb", `${inset}px`);
+		};
+		viewport.addEventListener("resize", update);
+		viewport.addEventListener("scroll", update);
+		update();
+	}
+	trackKeyboard();
+
 	/* ---------- composer ---------- */
 
 	function openCompose(href) {
@@ -496,6 +1176,11 @@
 		if (existing) {
 			existing.classList.remove("is-minimized");
 			$("[data-recipients]", existing)?.focus();
+			return;
+		}
+		// The docked composer comes from the server; offline, the full-page one is cached.
+		if (!navigator.onLine) {
+			location.href = new URL("/v2/compose", location.href).href;
 			return;
 		}
 		window.htmx.ajax("GET", "/v2/compose/new", { target: "#compose-dock", select: "#compose-dock", swap: "outerHTML", source: body }).then(() => {
@@ -523,18 +1208,29 @@
 		const hasContent = ["to", "cc", "bcc", "subject"].some((name) => form.elements[name]?.value.trim()) || (editor?.innerText.trim() ?? "") !== "";
 		if (!hasContent && !form.elements.draftId.value) return;
 		setState(form, "Saving…");
-		try {
-			const response = await fetch("/v2/draft", { method: "POST", body: composerData(form, false), headers: { Accept: "application/json" } });
-			const result = await response.json();
-			if (response.ok && result.draftId) {
-				form.elements.draftId.value = result.draftId;
-				setState(form, "Draft saved");
-			} else {
-				setState(form, result.error ?? "Not saved");
+		const data = composerData(form, false);
+		// The device copy is written first and kept until the server has the draft.
+		await withOutboxLock(async () => {
+			// Discarded while this save waited for the outbox.
+			if (form.dataset.discarding) return;
+			const local = await keepDraftOnDevice(form, data);
+			// From here the server may have a draft for this composer, even if the response is lost.
+			if (navigator.onLine) form.dataset.reachedServer = "1";
+			try {
+				const response = await fetch("/v2/draft", { method: "POST", body: data, headers: { Accept: "application/json", "X-Mailflare-User": body.dataset.user ?? "" } });
+				const result = await response.json();
+				await forgetOnDevice(local);
+				if (response.ok && result.draftId) {
+					form.elements.draftId.value = result.draftId;
+					setState(form, "Saved");
+				} else {
+					setState(form, result.error ?? "Not saved");
+				}
+			} catch {
+				setState(form, local ? "Saved on this device" : "Offline – not saved");
+				if (local) requestOutboxSync();
 			}
-		} catch {
-			setState(form, "Offline – not saved");
-		}
+		});
 	}
 
 	function closeComposer(form, { save = true } = {}) {
@@ -542,11 +1238,29 @@
 			form.dataset.closed = "1";
 			const mode = form.dataset.mode;
 			if (mode === "dock") form.remove();
-			else if (mode === "inline") load("GET", `${location.pathname}${location.search}`);
+			else if (mode === "inline") reload({ background: true }).catch(() => restoreReplySlot(form));
 			else navigate(form.elements.return?.value || "/v2/inbox");
 		};
 		if (save) saveDraft(form).finally(finish);
 		else finish();
+	}
+
+	/** The reply buttons a reply composer took the place of, kept for when closing it cannot reload the conversation. */
+	let replyButtons = null;
+	document.addEventListener("htmx:beforeSwap", (event) => {
+		const slot = event.detail.target;
+		if (slot?.id !== "reply-slot" || slot.querySelector("[data-composer]")) return;
+		// Without htmx's state: the reply form is the request in flight right now.
+		const copy = slot.cloneNode(true);
+		for (const el of [copy, ...copy.querySelectorAll("[class*='htmx-']")]) el.classList.remove(...[...el.classList].filter((name) => name.startsWith("htmx-")));
+		replyButtons = { path: location.pathname, html: copy.outerHTML };
+	});
+	function restoreReplySlot(form) {
+		const slot = form.closest("#reply-slot");
+		if (!slot) return form.remove();
+		if (replyButtons?.path !== location.pathname) return slot.replaceChildren();
+		slot.outerHTML = replyButtons.html;
+		window.htmx.process($("#reply-slot"));
 	}
 
 	function exec(command, value) {
@@ -606,6 +1320,7 @@
 	function setupComposer(form) {
 		if (form.dataset.ready) return;
 		form.dataset.ready = "1";
+		restoreDraftFromDevice(form);
 		let timer = 0;
 		const schedule = () => {
 			clearTimeout(timer);
@@ -650,11 +1365,13 @@
 		form.addEventListener("submit", (event) => {
 			const editor = $("[data-editor]", form);
 			$("[data-html]", form).value = editor ? editor.innerHTML : "";
-			if (!form.elements.to.value.trim()) {
+			const problem = recipientProblem(["to", "cc", "bcc"].map((name) => [name, form.elements[name]?.value]));
+			if (problem) {
 				event.preventDefault();
 				event.stopImmediatePropagation();
-				toast("Add at least one recipient.");
-				form.elements.to.focus();
+				toast(problem.message);
+				const field = form.elements[problem.field];
+				(field.recipientInput ?? field).focus();
 				return;
 			}
 			if (form.dataset.mode === "dock") form.elements.return.value = `${location.pathname}${location.search}`;
@@ -697,15 +1414,55 @@
 		if (response.ok) button.closest(".file-chip")?.remove();
 	}
 
+	/**
+	 * Throw away what the composer holds: its device copy and anything else it
+	 * has queued, and the server's draft. Saves hold the outbox lock, so one in
+	 * flight finishes first and its draft is discarded too. A discard that
+	 * cannot reach the server is queued, naming the draft by id and by composer
+	 * key (the server may have it under the key alone, when a save's response
+	 * was lost).
+	 */
 	async function discard(form) {
+		if (form.dataset.discarding) return;
+		form.dataset.discarding = "1";
 		form.dataset.closed = "1";
-		const draftId = form.elements.draftId.value;
-		if (draftId) {
-			const data = new FormData();
-			data.set("draftId", draftId);
-			await fetch("/v2/draft/discard", { method: "POST", body: data, headers: { Accept: "application/json" } });
-		}
-		toast("Draft discarded.");
+		let outcome = "discarded";
+		await withOutboxLock(async () => {
+			if (Offline && currentUser) {
+				try {
+					for (const entry of Offline.ofComposer(await Offline.outbox.all(), currentUser, form.dataset.clientKey)) await Offline.outbox.delete(entry.id);
+				} catch {
+					/* no IndexedDB: nothing was kept on the device */
+				}
+			}
+			const draftId = form.elements.draftId.value;
+			if (!draftId && !form.dataset.reachedServer) return;
+			const fields = [["draftId", draftId], ["composeKey", form.elements.composeKey?.value ?? ""]];
+			if (navigator.onLine) {
+				const data = new FormData();
+				for (const [name, value] of fields) data.set(name, value);
+				try {
+					const response = await fetch("/v2/draft/discard", { method: "POST", body: data, headers: { Accept: "application/json", "X-Mailflare-User": currentUser } });
+					if (response.status < 500) return;
+				} catch {
+					/* unreachable: queue it */
+				}
+			}
+			outcome = "queued";
+			const entry = { id: Offline?.newRequestId(), user: currentUser, kind: "discard", key: form.dataset.clientKey, createdAt: Date.now(), fields };
+			try {
+				if (!Offline || !currentUser) throw new Error("no outbox");
+				await Offline.outbox.add(entry);
+			} catch {
+				outcome = "kept";
+			}
+		});
+		if (outcome === "queued") requestOutboxSync();
+		await updatePending();
+		const message = outcome === "kept" ? "You're offline. The draft is still in Drafts." : "Draft discarded.";
+		// Offline, the page composer leaves by a full navigation, which would drop a toast.
+		if (form.dataset.mode === "page" && (outcome !== "discarded" || !navigator.onLine)) flashAfterNavigation(message);
+		else toast(message);
 		closeComposer(form, { save: false });
 	}
 
@@ -773,11 +1530,23 @@
 		if (href) navigate(href);
 	}
 
-	function refresh() {
-		return load("GET", `${location.pathname}${location.search}`);
+	/**
+	 * Reload the page shown, keeping the toast (see reload). Pull to refresh keeps it too: the
+	 * person asked for newer rows, not to lose an Undo, and the reload has no toast of its own.
+	 */
+	function refresh({ background = false } = {}) {
+		if (!navigator.onLine) return Promise.resolve();
+		return reload({ background });
+	}
+
+	/** The server refused something the page already showed as done: say why, and reload to show the truth. */
+	function explainRefusal(message) {
+		toast(message);
+		return refresh({ background: true });
 	}
 
 	function undo() {
+		if (!navigator.onLine) return toast("Undo needs a connection.");
 		const button = $("#toast [data-undo]");
 		if (button) button.click();
 		else toast("Nothing to undo.");
@@ -1021,26 +1790,60 @@
 
 	/* ---------- live updates ---------- */
 
+	// Background requests answer for the page they were sent from (see staleBackgroundAnswer).
+	let navigations = 0;
+	let loading = 0;
+	const here = () => ({ href: location.href, navigations, loading });
+	document.addEventListener("htmx:beforeSend", (event) => {
+		const { xhr, requestConfig: config } = event.detail;
+		if (!xhr) return;
+		if (config?.boosted && config.verb === "get") {
+			navigations++;
+			loading++;
+			xhr.addEventListener("loadend", () => loading--, { once: true });
+		} else if (isBackground(config)) {
+			xhr.mfSentFrom = here();
+		}
+	});
+	document.addEventListener("htmx:beforeSwap", (event) => {
+		const sentFrom = event.detail.xhr?.mfSentFrom;
+		if (sentFrom && staleBackgroundAnswer(sentFrom, here())) event.detail.shouldSwap = false;
+	});
+
 	function refreshQuietly() {
+		// Replayed actions must reach the server before the list is reloaded.
+		if (deferRefreshUntilDrained()) return;
+		if (body.dataset.cachedAt) return refreshCachedPage();
+		// It could only fail; coming back online reloads.
+		if (!navigator.onLine) return;
 		const kind = pageKind();
 		const busy = selectedIds().length || $("details.menu[open]") || isTyping(document.activeElement);
 		const path = `${location.pathname}${location.search}`;
 		if (kind === "list" && !busy) {
-			load("GET", path);
+			reload({ background: true });
 		} else {
-			window.htmx.ajax("GET", `/v2/poll?path=${encodeURIComponent(path)}`, { target: "#nav", select: "#nav", swap: "outerHTML", source: body });
+			window.htmx.ajax("GET", `/v2/poll?path=${encodeURIComponent(path)}`, { target: "#nav", select: "#nav", selectOOB: "#nav", swap: "outerHTML", source: body, headers: BACKGROUND });
 		}
 	}
 
+	// The socket is open only while the page is shown (see realtimeStep).
+	let socket = null;
+	let reconnectTimer = 0;
+	const pageShown = () => document.visibilityState !== "hidden";
 	function connect(attempt = 0) {
 		if (!("WebSocket" in window)) return;
-		const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/realtime`);
+		clearTimeout(reconnectTimer);
+		const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/realtime`);
+		socket = ws;
 		let heartbeat = 0;
-		socket.addEventListener("open", () => {
+		ws.addEventListener("open", () => {
 			attempt = 0;
-			heartbeat = setInterval(() => socket.readyState === 1 && socket.send("ping"), 25000);
+			heartbeat = setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
+			// The server is back: a cached copy need not wait for its next try, nor changes waiting on a live page.
+			if (body.dataset.cachedAt) syncCachedPage({ restart: true });
+			else if (pendingCount) drainOutbox();
 		});
-		socket.addEventListener("message", (event) => {
+		ws.addEventListener("message", (event) => {
 			try {
 				const payload = JSON.parse(event.data);
 				if (payload?.type === "new_message") refreshQuietly();
@@ -1048,13 +1851,888 @@
 				/* heartbeat replies */
 			}
 		});
-		socket.addEventListener("close", () => {
+		ws.addEventListener("close", () => {
 			clearInterval(heartbeat);
-			setTimeout(() => connect(attempt + 1), Math.min(1000 * 2 ** attempt, 30000));
+			// Closed on purpose while hidden: showing the page again reconnects.
+			if (socket !== ws) return;
+			socket = null;
+			const { retryIn } = realtimeStep("lost", { visible: pageShown(), socket: false, attempt });
+			if (retryIn !== undefined) {
+				reconnectTimer = setTimeout(() => {
+					if (realtimeStep("retry", { visible: pageShown(), socket: Boolean(socket) }).connect) connect(attempt + 1);
+				}, retryIn);
+			}
 		});
 	}
-	connect();
+	if (pageShown()) connect();
 	document.addEventListener("visibilitychange", () => {
-		if (document.visibilityState === "visible" && pageKind() === "list") refreshQuietly();
+		const shown = pageShown();
+		const step = realtimeStep(shown ? "visible" : "hidden", { visible: shown, socket: Boolean(socket) });
+		if (step.close) {
+			clearTimeout(reconnectTimer);
+			const ws = socket;
+			socket = null;
+			ws.close();
+		}
+		if (step.connect) connect();
+		if (!step.catchUp) return;
+		// New mail that arrived while the socket was closed: the list reloads, other pages refresh the sidebar counts.
+		if (body.dataset.cachedAt) syncCachedPage({ restart: true });
+		else refreshQuietly();
 	});
+
+	/* ---------- installable app ---------- */
+
+	// The server renders the worker URL with the asset versions it precaches.
+	function registerServiceWorker() {
+		const url = body.dataset.sw;
+		if (!url || !("serviceWorker" in navigator) || !window.isSecureContext) return;
+		navigator.serviceWorker.register(url, { scope: "/v2/" }).catch(() => {
+			/* Offline support is optional; the app works without it. */
+		});
+	}
+	if (document.readyState === "complete") registerServiceWorker();
+	else window.addEventListener("load", registerServiceWorker, { once: true });
+
+	/* ---------- push notifications ---------- */
+
+	// The sidebar's [data-push] button. States: on, off, blocked, install (iOS
+	// outside the installed app, where Safari has no push), unsupported (hidden).
+	const PUSH_LABELS = {
+		on: "Notifications on",
+		off: "Turn on notifications",
+		blocked: "Notifications blocked",
+		install: "Install the app first",
+		busy: "Notifications…",
+	};
+	const PUSH_TITLES = {
+		on: "New mail shows a notification on this device. Click to turn off.",
+		off: "Show a notification on this device when new mail arrives.",
+		blocked: "Notifications are blocked for this site. Allow them in the browser's site settings.",
+		install: "On iPhone and iPad, notifications work only from the installed app: Share, then Add to Home Screen.",
+		busy: "",
+	};
+	// Turning notifications on or off needs the push service and the server: offline,
+	// the control keeps showing the known state but changes nothing.
+	const PUSH_OFFLINE = "You're offline. Turn notifications on or off once you're back online.";
+	let pushState = "unsupported";
+
+	const isIos = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+	const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+	const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window && window.isSecureContext;
+
+	function base64UrlToBytes(value) {
+		const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+		const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+		return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+	}
+
+	function bytesToBase64Url(buffer) {
+		return btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	}
+
+	function applyPushState() {
+		const offline = !navigator.onLine && (pushState === "on" || pushState === "off");
+		for (const button of $$("[data-push]")) {
+			button.hidden = pushState === "unsupported";
+			button.dataset.state = pushState;
+			button.disabled = pushState === "busy";
+			button.toggleAttribute("data-offline", offline);
+			button.setAttribute("aria-disabled", offline ? "true" : "false");
+			button.title = offline ? PUSH_OFFLINE : PUSH_TITLES[pushState] ?? "";
+			button.setAttribute("aria-pressed", pushState === "on" ? "true" : "false");
+			const label = $("[data-push-label]", button);
+			if (label) label.textContent = PUSH_LABELS[pushState] ?? "";
+		}
+	}
+
+	function setPushState(state) {
+		pushState = state;
+		applyPushState();
+	}
+
+	/** What to tell the user when turning notifications on or off failed. */
+	function pushErrorMessage(error, fallback) {
+		// fetch rejects with a TypeError ("Failed to fetch") when the connection drops mid-change.
+		if (!navigator.onLine || error instanceof TypeError) return PUSH_OFFLINE;
+		if (error instanceof DOMException && error.name === "AbortError") return "Couldn't reach the push service. Check your connection and try again.";
+		return error instanceof Error && error.message ? error.message : fallback;
+	}
+
+	/** The /v2/ registration once it has an active worker (pushManager needs one). */
+	async function activeRegistration() {
+		let registration = await navigator.serviceWorker.getRegistration("/v2/");
+		if (!registration && body.dataset.sw) registration = await navigator.serviceWorker.register(body.dataset.sw, { scope: "/v2/" });
+		if (!registration) throw new Error("No service worker");
+		if (registration.active) return registration;
+		const worker = registration.installing || registration.waiting;
+		await new Promise((resolve) => {
+			worker?.addEventListener("statechange", () => worker.state === "activated" && resolve());
+		});
+		return registration;
+	}
+
+	async function postJson(path, value) {
+		const response = await fetch(path, {
+			method: "POST",
+			credentials: "same-origin",
+			headers: { "Content-Type": "application/json", Accept: "application/json" },
+			body: JSON.stringify(value),
+		});
+		if (!response.ok) {
+			const data = await response.json().catch(() => ({}));
+			throw new Error(data.error || "Could not update notifications.");
+		}
+	}
+
+	async function currentSubscription() {
+		const registration = await navigator.serviceWorker.getRegistration("/v2/");
+		return registration ? registration.pushManager.getSubscription() : null;
+	}
+
+	/** Whether the server still pushes to this endpoint for whoever is signed in; null when it cannot say. */
+	async function serverHasSubscription(subscription) {
+		try {
+			const response = await fetch("/v2/push/check", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ endpoint: subscription.endpoint }),
+			});
+			if (!response.ok) return null;
+			return (await response.json()).subscribed === true;
+		} catch {
+			return null;
+		}
+	}
+
+	async function readPushState() {
+		const key = body.dataset.vapidKey;
+		if (!key) return "unsupported";
+		if (isIos() && !isStandalone()) return "install";
+		if (!pushSupported()) return "unsupported";
+		if (Notification.permission === "denied") return "blocked";
+		const subscription = await currentSubscription().catch(() => null);
+		if (!subscription || Notification.permission !== "granted") return "off";
+		// A subscription made under an older server key can no longer be pushed to.
+		const subscribedKey = subscription.options?.applicationServerKey;
+		if (subscribedKey && bytesToBase64Url(subscribedKey) !== key) return "off";
+		// Signing out drops the server's row but not the browser's subscription:
+		// the next person to sign in here starts with notifications off.
+		if (await serverHasSubscription(subscription) === false) {
+			await subscription.unsubscribe().catch(() => {});
+			return "off";
+		}
+		return "on";
+	}
+
+	async function subscribePush() {
+		const key = body.dataset.vapidKey;
+		setPushState("busy");
+		try {
+			const permission = await Notification.requestPermission();
+			if (permission !== "granted") {
+				setPushState(permission === "denied" ? "blocked" : "off");
+				return;
+			}
+			const registration = await activeRegistration();
+			const existing = await registration.pushManager.getSubscription();
+			const existingKey = existing?.options?.applicationServerKey;
+			if (existing && existingKey && bytesToBase64Url(existingKey) !== key) await existing.unsubscribe();
+			const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) });
+			try {
+				await postJson("/v2/push/subscribe", { ...subscription.toJSON(), applicationServerKey: key });
+			} catch (error) {
+				await subscription.unsubscribe().catch(() => {});
+				throw error;
+			}
+			setPushState("on");
+			toast("Notifications are on for this device.");
+		} catch (error) {
+			setPushState(await readPushState());
+			toast(pushErrorMessage(error, "Could not turn on notifications."));
+		}
+	}
+
+	async function unsubscribePush() {
+		setPushState("busy");
+		try {
+			const subscription = await currentSubscription();
+			if (subscription) {
+				await postJson("/v2/push/unsubscribe", { endpoint: subscription.endpoint });
+				await subscription.unsubscribe();
+			}
+			setPushState("off");
+			toast("Notifications are off for this device.");
+		} catch (error) {
+			setPushState(await readPushState());
+			toast(pushErrorMessage(error, "Could not turn off notifications."));
+		}
+	}
+
+	document.addEventListener("click", (event) => {
+		const button = event.target instanceof Element ? event.target.closest("[data-push]") : null;
+		if (!button) return;
+		// Nothing may change offline: a half-done change would leave the browser and server disagreeing.
+		if (!navigator.onLine && (pushState === "off" || pushState === "on")) toast(PUSH_OFFLINE);
+		else if (pushState === "off") subscribePush();
+		else if (pushState === "on") unsubscribePush();
+		else if (pushState === "install" || pushState === "blocked") toast(PUSH_TITLES[pushState]);
+	});
+	// #nav is re-rendered on every navigation; keep the control's state on it.
+	document.addEventListener("htmx:afterSettle", applyPushState);
+	document.addEventListener("htmx:oobAfterSwap", applyPushState);
+	window.addEventListener("offline", applyPushState);
+	// Back online, ask the server again: it may have dropped this device while we could not check.
+	window.addEventListener("online", () => {
+		if (pushState === "on" || pushState === "off") readPushState().then(setPushState);
+	});
+
+	readPushState().then(setPushState);
+
+	// A notification click in the service worker opens its message here.
+	navigator.serviceWorker?.addEventListener("message", (event) => {
+		const url = event.data?.type === "mf:open" ? event.data.url : null;
+		if (typeof url !== "string") return;
+		const target = new URL(url, location.href);
+		if (target.origin !== location.origin || !target.pathname.startsWith("/v2/")) return;
+		// Focusing the page also starts its quiet reload (visibilitychange): its answer is dropped as stale.
+		navigate(`${target.pathname}${target.search}`);
+	});
+
+	/* ---------- offline: banner, cached pages and the outbox ----------
+	   offline.js holds the rules and the IndexedDB outbox. This part wires them
+	   to the page: the topbar banner, full navigations to cached pages while
+	   offline, handing boosted pages to the service worker to keep, queuing
+	   actions, drafts and sends that could not reach the server, and replaying
+	   them in order once it can. Everything is keyed by <body data-user>. */
+
+	const Offline = window.MailflareOffline;
+	const currentUser = body.dataset.user ?? "";
+	let draining = null;
+	let refreshAfterDrain = false;
+	/** The next try to drain while online with the server out of reach, and how many came before it. */
+	let drainTimer = 0;
+	let drainTry = 0;
+	let pendingCount = 0;
+	/** Whether the server answered the last try to reload a cached copy: "unknown", "down" or "up". */
+	let reach = "unknown";
+
+	function withOutboxLock(fn) {
+		return Offline ? Offline.withLock(fn) : fn();
+	}
+
+	function postToWorker(message) {
+		navigator.serviceWorker?.controller?.postMessage(message);
+	}
+
+	function requestOutboxSync() {
+		navigator.serviceWorker?.ready.then((registration) => registration.sync?.register(Offline.SYNC_TAG)).catch(() => {
+			/* No Background Sync: the page replays on "online" and on load. */
+		});
+	}
+
+	function formatCachedAt(ms) {
+		const date = new Date(ms);
+		const sameDay = date.toDateString() === new Date().toDateString();
+		return new Intl.DateTimeFormat(undefined, sameDay ? { hour: "numeric", minute: "2-digit" } : { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(date);
+	}
+
+	function updateConnectivity() {
+		const offline = !navigator.onLine;
+		const cachedAt = Number(body.dataset.cachedAt) || 0;
+		const unreachable = !offline && Boolean(cachedAt) && reach === "down";
+		body.classList.toggle("is-offline", offline);
+		body.classList.toggle("is-unreachable", unreachable);
+		const banner = $("[data-offline-banner]");
+		const text = $("[data-offline-text]");
+		if (banner && text) {
+			banner.hidden = !offline && !cachedAt && !pendingCount;
+			const state = { offline, copyTime: cachedAt ? formatCachedAt(cachedAt) : "", pending: pendingCount, reach };
+			text.textContent = Offline ? Offline.bannerText(state) : offline ? "Offline" : "Syncing";
+		}
+		// Search runs on the server.
+		const search = $(".search input");
+		if (search) {
+			search.disabled = offline || unreachable;
+			search.placeholder = offline || unreachable ? "Search needs a connection" : "Search mail";
+		}
+	}
+
+	async function updatePending() {
+		if (!Offline || !currentUser) return;
+		try {
+			pendingCount = (await Offline.outbox.all()).filter((entry) => entry.user === currentUser).length;
+		} catch {
+			pendingCount = 0;
+		}
+		updateConnectivity();
+	}
+
+	async function signedOut() {
+		if (Offline) await Offline.purgeEverything().catch(() => {});
+		location.href = new URL("/login", location.href).href;
+	}
+
+	/** Store what a failed request would have done; true when it was queued. */
+	async function queueOffline(kind, fields, key) {
+		if (!Offline || !currentUser) return false;
+		const entry = {
+			id: Offline.newRequestId(),
+			user: currentUser,
+			kind,
+			key: key || undefined,
+			createdAt: Date.now(),
+			fields: Offline.prepareFields(kind, fields),
+		};
+		try {
+			await withOutboxLock(() => Offline.outbox.add(entry));
+		} catch {
+			return false;
+		}
+		requestOutboxSync();
+		await updatePending();
+		// Queued although the browser is online: the server is out of reach, so keep trying.
+		cancelDrainRetry();
+		scheduleDrainRetry({ remaining: 1, unreachable: true });
+		return true;
+	}
+
+	/** A toast for the next page, when going offline means a full navigation. */
+	function flashAfterNavigation(message) {
+		try {
+			sessionStorage.setItem("mf_flash", message);
+		} catch {
+			/* sessionStorage unavailable */
+		}
+	}
+	function showFlash() {
+		try {
+			const message = sessionStorage.getItem("mf_flash");
+			sessionStorage.removeItem("mf_flash");
+			if (message) toast(message);
+		} catch {
+			/* sessionStorage unavailable */
+		}
+	}
+
+	function fieldsOf(formData) {
+		return formData ? [...formData] : [];
+	}
+
+	/**
+	 * htmx could not reach the server (Offline.sendFailure decides what follows).
+	 * A forward action or send goes to the outbox (the rows already changed); a
+	 * boosted page becomes a full navigation the service worker can answer from
+	 * its cache; a background request says nothing. False: say it failed.
+	 */
+	function handleOfflineFailure(detail) {
+		const config = detail.requestConfig;
+		if (!config) return false;
+		const url = new URL(config.path, location.href);
+		const fields = config.verb === "post" ? fieldsOf(config.formData) : [];
+		const outcome = Offline
+			? Offline.sendFailure({ verb: config.verb, boosted: config.boosted, sameOrigin: url.origin === location.origin, background: isBackground(config), kind: Offline.queueKind(url.pathname, fields) })
+			: isBackground(config) ? "silent" : "toast";
+		if (outcome === "silent") return true;
+		if (outcome === "navigate") {
+			location.href = url.href;
+			return true;
+		}
+		if (outcome !== "send" && outcome !== "act") return false;
+		const value = (name) => Offline.fieldValue(fields, name);
+		if (outcome === "send") {
+			const form = config.elt?.closest?.("[data-composer]");
+			if (form) {
+				form.dataset.closed = "1";
+				setState(form, "Queued");
+			}
+			queueOffline("send", fields, form?.dataset.clientKey).then((queued) => {
+				if (!queued) {
+					if (form) {
+						delete form.dataset.closed;
+						setState(form, "Not sent");
+					}
+					return toast("You appear to be offline.");
+				}
+				const note = "You're offline. The message will be sent when you're back online.";
+				if (!form || form.dataset.mode !== "page") {
+					form?.remove();
+					toast(note);
+				} else {
+					flashAfterNavigation(note);
+					location.href = value("return") || "/v2/inbox";
+				}
+			});
+			return true;
+		}
+		queueOffline("act", fields).then((queued) => {
+			if (!queued) return toast("You appear to be offline.");
+			if (value("conversation") === "1") {
+				const action = value("action");
+				if (action === "star" || action === "unstar") {
+					const star = $("#main .star-button");
+					star?.classList.toggle("is-starred", action === "star");
+					if (star) star.value = action === "star" ? "unstar" : "star";
+				} else {
+					// The conversation leaves the view, as it would online.
+					flashAfterNavigation("You're offline. This will sync when you're back online.");
+					location.href = value("return") || "/v2/inbox";
+					return;
+				}
+			}
+			toast("You're offline. This will sync when you're back online.");
+		});
+		return true;
+	}
+
+	/* Drafts: the device copy is an outbox entry, one per composer. */
+
+	async function keepDraftOnDevice(form, data) {
+		if (!Offline || !currentUser) return null;
+		const entry = {
+			id: Offline.newRequestId(),
+			user: currentUser,
+			kind: "draft",
+			key: form.dataset.clientKey,
+			createdAt: Date.now(),
+			fields: Offline.prepareFields("draft", fieldsOf(data)),
+		};
+		try {
+			await Offline.outbox.add(entry);
+			return entry.id;
+		} catch {
+			return null;
+		}
+	}
+
+	async function forgetOnDevice(id) {
+		if (!id) return;
+		await Offline.outbox.delete(id).catch(() => {});
+		await updatePending();
+	}
+
+	/**
+	 * Every composer gets its own key, sent with each save and send (composeKey),
+	 * so the server keeps one draft per composer and refuses a replayed send of a
+	 * message that went out before the composer learned its draft id.
+	 */
+	function newComposeKey() {
+		if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+	}
+
+	/** A composer reopened on this device gets back what was typed but never reached the server. */
+	async function restoreDraftFromDevice(form) {
+		form.dataset.clientKey = form.elements.draftId?.value || newComposeKey();
+		if (form.elements.composeKey) form.elements.composeKey.value = form.dataset.clientKey;
+		if (!Offline || !currentUser || !form.elements.draftId?.value) return;
+		let entry;
+		try {
+			entry = (await Offline.outbox.all()).filter((item) => item.user === currentUser && item.kind === "draft" && item.key === form.dataset.clientKey).at(-1);
+		} catch {
+			return;
+		}
+		if (!entry) return;
+		for (const name of ["to", "cc", "bcc", "subject"]) {
+			const input = form.elements[name];
+			const saved = Offline.fieldValue(entry.fields, name);
+			if (input && saved !== input.value) {
+				input.value = saved;
+				input.closest("[data-cmp-row]")?.removeAttribute("hidden");
+			}
+		}
+		const editor = $("[data-editor]", form);
+		const html = Offline.fieldValue(entry.fields, "html");
+		if (editor && html) editor.innerHTML = html;
+		setState(form, "Saved on this device");
+	}
+
+	function applyDraftId(key, draftId) {
+		const form = $$("[data-composer]").find((item) => item.dataset.clientKey === key);
+		if (form && !form.elements.draftId.value) form.elements.draftId.value = draftId;
+	}
+
+	/* Replay */
+
+	function deferRefreshUntilDrained() {
+		if (!draining) return false;
+		refreshAfterDrain = true;
+		return true;
+	}
+
+	/** After a drain that could not reach the server although the browser is online: try again, backing off. */
+	function scheduleDrainRetry(result) {
+		clearTimeout(drainTimer);
+		const delay = Offline ? Offline.drainRetryDelay(result, { online: navigator.onLine, cached: Boolean(body.dataset.cachedAt), attempt: drainTry }) : null;
+		if (delay === null) {
+			drainTry = 0;
+			return;
+		}
+		drainTry += 1;
+		drainTimer = setTimeout(drainOutbox, delay);
+	}
+
+	function cancelDrainRetry() {
+		clearTimeout(drainTimer);
+		drainTry = 0;
+	}
+
+	/** Replay the outbox, then reload what is on screen so it shows the result. */
+	function drainOutbox() {
+		if (!Offline || !currentUser || !navigator.onLine) return Promise.resolve(null);
+		if (draining) return draining;
+		const refused = [];
+		draining = (async () => {
+			try {
+				return await Offline.withLock(() => Offline.drain(Offline.outbox, {
+					fetch: (path, init) => fetch(path, init),
+					user: currentUser,
+					onDropped: (message) => refused.push(message),
+					onDraftId: applyDraftId,
+				}));
+			} catch {
+				return null;
+			}
+		})();
+		return draining.then(async (result) => {
+			draining = null;
+			await updatePending();
+			scheduleDrainRetry(result);
+			if (result?.signedOut) {
+				await signedOut();
+				return result;
+			}
+			if (refused.length) {
+				// As for an action refused online.
+				await explainRefusal(refused[refused.length - 1]);
+			} else if (result?.sent || refreshAfterDrain) {
+				refreshQuietly();
+			}
+			refreshAfterDrain = false;
+			return result;
+		});
+	}
+
+	/* Cached copies: a page the worker answered from its cache (data-cached-at)
+	   is reloaded as soon as the server answers again, whatever kind of page it
+	   is. Every try replays the outbox first. While the server stays out of
+	   reach the tries back off; coming online, back into view or reconnecting
+	   the live socket tries again at once. A composer, selection, open menu or
+	   field being typed in inside #main holds the reload (only #nav is
+	   refreshed) until it is gone, so nothing being worked on is swapped away. */
+
+	const HELD_RETRY_MS = 5000;
+	/** A try that has not answered by then counts as failed (a request can hang where packets are dropped). */
+	const QUIET_TIMEOUT_MS = 20000;
+	let cachedTimer = 0;
+	let cachedTry = 0;
+	/** The quiet request in flight for a cached copy: its path, and the status it got. */
+	let quiet = null;
+	/** Where the reader was on the cached copy, put back once the fresh page settles. */
+	let placeToRestore = null;
+
+	const isQuiet = (config) => Boolean(quiet && config && config.path === quiet.path);
+
+	function setReach(value) {
+		if (reach === value) return;
+		reach = value;
+		updateConnectivity();
+	}
+
+	function holdsCachedPage() {
+		const main = $("#main");
+		if (!main) return false;
+		const active = document.activeElement;
+		return Boolean($("[data-composer]", main) || selectedIds().length || $("details.menu[open]", main) || (isTyping(active) && main.contains(active)));
+	}
+
+	function scheduleCachedRefresh(delay) {
+		clearTimeout(cachedTimer);
+		if (body.dataset.cachedAt && navigator.onLine) cachedTimer = setTimeout(syncCachedPage, delay);
+	}
+
+	/** Replay the outbox, then reload the cached copy on screen. */
+	function syncCachedPage({ restart = false } = {}) {
+		clearTimeout(cachedTimer);
+		if (!body.dataset.cachedAt || !navigator.onLine) return;
+		if (restart) cachedTry = 0;
+		drainOutbox().finally(refreshCachedPage);
+	}
+
+	function rememberPlace() {
+		return {
+			path: `${location.pathname}${location.search}`,
+			x: window.scrollX,
+			y: window.scrollY,
+			panes: $$(".list, .thread", page() ?? document).map((pane) => pane.scrollTop),
+			open: $$(".msg.is-expanded").map((section) => section.dataset.id),
+			messageCursor,
+		};
+	}
+
+	function restorePlace(place) {
+		if (place.path !== `${location.pathname}${location.search}`) return;
+		for (const section of messages()) {
+			if (place.open.includes(section.dataset.id) && section.classList.contains("is-collapsed")) expandMessage(section);
+		}
+		if (messages().length) messageCursor = Math.min(place.messageCursor, messages().length - 1);
+		restoreScroll(place);
+	}
+
+	/** Mail frames size themselves after the swap, so keep putting the scroll back for a moment, until the reader scrolls. */
+	function restoreScroll(place) {
+		const until = Date.now() + 2000;
+		let moved = false;
+		const stop = () => (moved = true);
+		const events = ["wheel", "touchstart", "keydown", "mousedown"];
+		events.forEach((name) => window.addEventListener(name, stop, { once: true, passive: true, capture: true }));
+		const apply = () => {
+			if (moved || place.path !== `${location.pathname}${location.search}`) return events.forEach((name) => window.removeEventListener(name, stop, { capture: true }));
+			let short = false;
+			$$(".list, .thread", page() ?? document).forEach((pane, index) => {
+				const want = place.panes[index];
+				if (want === undefined) return;
+				pane.scrollTop = want;
+				if (Math.abs(pane.scrollTop - want) > 1) short = true;
+			});
+			window.scrollTo(place.x, place.y);
+			if (Math.abs(window.scrollY - place.y) > 1) short = true;
+			if (short && Date.now() < until) setTimeout(apply, 100);
+			else events.forEach((name) => window.removeEventListener(name, stop, { capture: true }));
+		};
+		apply();
+	}
+
+	function refreshCachedPage() {
+		clearTimeout(cachedTimer);
+		if (!body.dataset.cachedAt || !navigator.onLine || quiet) return;
+		if (deferRefreshUntilDrained()) return;
+		const path = `${location.pathname}${location.search}`;
+		const held = holdsCachedPage();
+		// Held, and the server already answered: wait for the page to be let go.
+		if (held && reach === "up") return scheduleCachedRefresh(HELD_RETRY_MS);
+		let request;
+		if (held) {
+			// Learn whether the server is back, and bring #nav up to date, without touching #main.
+			quiet = { path: `/v2/poll?path=${encodeURIComponent(path)}`, status: 0 };
+			request = window.htmx.ajax("GET", quiet.path, { target: "#nav", select: "#nav", selectOOB: "#nav", swap: "outerHTML", source: body });
+		} else {
+			quiet = { path, status: 0 };
+			placeToRestore = rememberPlace();
+			request = reload();
+		}
+		const sent = quiet;
+		const settle = (status) => {
+			if (quiet !== sent) return;
+			clearTimeout(watchdog);
+			settleCachedRefresh(held, status);
+		};
+		const watchdog = setTimeout(() => settle(-1), QUIET_TIMEOUT_MS);
+		Promise.resolve(request).then(() => settle(sent.status), () => settle(-1));
+	}
+
+	/**
+	 * What a quiet try found decides the next one. status is -1 when the request
+	 * failed (no server), 0 when htmx never sent it (queued behind another).
+	 */
+	function settleCachedRefresh(held, status) {
+		quiet = null;
+		if (status === 0) {
+			placeToRestore = null;
+			scheduleCachedRefresh(HELD_RETRY_MS);
+			return;
+		}
+		if (status < 0 || status >= 500) {
+			placeToRestore = null;
+			setReach("down");
+			scheduleCachedRefresh(Offline ? Offline.retryDelay(cachedTry++) : HELD_RETRY_MS);
+			return;
+		}
+		cachedTry = 0;
+		if (!body.dataset.cachedAt) {
+			// The fresh page is on screen (the swap cleared the mark).
+			setReach("unknown");
+			return;
+		}
+		placeToRestore = null;
+		if (held) {
+			setReach("up");
+			scheduleCachedRefresh(HELD_RETRY_MS);
+		} else {
+			// The server answered, but not with this page (it is gone, or needs a sign-in): show what it says.
+			location.reload();
+		}
+	}
+
+	/** Rows still waiting on queued actions look the way those actions will leave them. */
+	async function applyPendingToList() {
+		if (!Offline || !currentUser || pageKind() !== "list") return;
+		let entries;
+		try {
+			entries = (await Offline.outbox.all()).filter((entry) => entry.user === currentUser && entry.kind === "act");
+		} catch {
+			return;
+		}
+		const view = page()?.dataset.view ?? "";
+		for (const entry of entries) {
+			const values = { action: Offline.fieldValue(entry.fields, "action"), move: Offline.fieldValue(entry.fields, "move"), snooze: Offline.fieldValue(entry.fields, "snooze") };
+			const ids = entry.fields.filter(([name]) => name === "ids").map(([, id]) => id);
+			for (const row of rows().filter((item) => ids.includes(item.dataset.id))) {
+				if (leavesList(values, view)) row.remove();
+				else if (values.action === "read" || values.action === "unread") row.classList.toggle("is-unread", values.action === "unread");
+				else if (values.action === "star" || values.action === "unstar") {
+					const star = row.querySelector("[data-star]");
+					star?.classList.toggle("is-starred", values.action === "star");
+					star?.setAttribute("aria-pressed", String(values.action === "star"));
+				}
+			}
+		}
+	}
+
+	/* Wiring */
+
+	// Offline, boosted links become full navigations the worker answers from its cache.
+	document.addEventListener("htmx:beforeRequest", (event) => {
+		const config = event.detail.requestConfig;
+		if (navigator.onLine || config?.verb !== "get" || !config.boosted) return;
+		event.preventDefault();
+		const href = new URL(config.path, location.href).href;
+		if (onSheetEntry) location.replace(href);
+		else location.href = href;
+	});
+
+	// Boosted pages never pass through the worker's cache; hand it the documents.
+	document.addEventListener("htmx:afterRequest", (event) => {
+		const { xhr, requestConfig: config, successful } = event.detail;
+		if (!xhr || !config || config.verb !== "get") return;
+		if (isQuiet(config)) quiet.status = xhr.status;
+		let url;
+		try {
+			url = new URL(xhr.responseURL, location.href);
+		} catch {
+			return;
+		}
+		if (url.origin !== location.origin) return;
+		if (url.pathname === "/login") {
+			signedOut();
+			return;
+		}
+		if (!successful || xhr.status !== 200) return;
+		// Whatever the server sent in place of a cached copy is fresh.
+		if (event.detail.target?.id === "main" && body.dataset.cachedAt) {
+			delete body.dataset.cachedAt;
+			clearTimeout(cachedTimer);
+			reach = "unknown";
+			updateConnectivity();
+		}
+		if (url.pathname !== new URL(config.path, location.href).pathname) return;
+		if (Offline?.cacheKind(url) === "page") postToWorker({ type: "store-page", url: url.href, html: xhr.responseText });
+	});
+
+	document.addEventListener("htmx:afterSettle", (event) => {
+		if (event.detail.target?.id !== "main") return;
+		applyPendingToList();
+		if (placeToRestore) {
+			// After every afterSettle of this swap (htmx fires one per settled element, and onPage scrolls on each).
+			const place = placeToRestore;
+			placeToRestore = null;
+			setTimeout(() => restorePlace(place), 0);
+		}
+	});
+
+	// Online, the worker keeps a copy of an attachment as it is downloaded (the
+	// download itself never passes through it); offline, that copy is saved instead.
+	document.addEventListener("click", (event) => {
+		const link = event.target instanceof Element ? event.target.closest("a.attachment") : null;
+		if (!link) return;
+		if (navigator.onLine) {
+			postToWorker({ type: "keep-file", url: link.href });
+			return;
+		}
+		event.preventDefault();
+		fetch(link.href)
+			.then((response) => (response.ok ? response.blob() : Promise.reject(new Error("not cached"))))
+			.then((blob) => {
+				const href = URL.createObjectURL(blob);
+				const save = document.createElement("a");
+				save.href = href;
+				save.download = link.getAttribute("download") || "";
+				save.click();
+				setTimeout(() => URL.revokeObjectURL(href), 30000);
+			})
+			.catch(() => toast("This attachment isn't available offline."));
+	});
+
+	navigator.serviceWorker?.addEventListener("message", (event) => {
+		const data = event.data;
+		if (data?.type === "outbox-draft") applyDraftId(data.key, data.draftId);
+		else if (data?.type === "outbox-dropped") explainRefusal(data.message);
+		else if (data?.type === "outbox-drained") {
+			updatePending();
+			if (data.result?.signedOut) signedOut();
+			// A refused entry has reloaded the page already (outbox-dropped); keep its message.
+			else if (data.result?.sent && !data.result.dropped) refreshQuietly();
+		}
+	});
+
+	window.addEventListener("online", () => {
+		reach = "unknown";
+		cancelDrainRetry();
+		updateConnectivity();
+		if (body.dataset.cachedAt) return syncCachedPage({ restart: true });
+		drainOutbox().then((result) => {
+			// A refused entry has reloaded the page already; another reload would take its message away.
+			if (result && !result.sent && !result.dropped && !refreshAfterDrain) refreshQuietly();
+		});
+	});
+	window.addEventListener("offline", () => {
+		clearTimeout(cachedTimer);
+		cancelDrainRetry();
+		reach = "unknown";
+		updateConnectivity();
+	});
+
+	/**
+	 * Keep the full-page composer so mail can be written offline, once per tab
+	 * session. The flag is set only when the worker says it stored the page, so a
+	 * page left before then (the first load, while the worker is still
+	 * installing) asks again on the next load.
+	 */
+	function warmComposer() {
+		try {
+			if (sessionStorage.getItem("mf_compose_warm")) return;
+		} catch {
+			return;
+		}
+		navigator.serviceWorker?.ready.then((registration) => {
+			if (!registration.active) return;
+			const channel = new MessageChannel();
+			channel.port1.onmessage = (event) => {
+				channel.port1.close();
+				if (event.data !== true) return;
+				try {
+					sessionStorage.setItem("mf_compose_warm", "1");
+				} catch {
+					/* sessionStorage unavailable */
+				}
+			};
+			registration.active.postMessage({ type: "warm", url: "/v2/compose" }, [channel.port2]);
+		}).catch(() => {});
+	}
+
+	updateConnectivity();
+	showFlash();
+	if (Offline && currentUser) {
+		// Another account's caches and queued actions go before anything else runs.
+		Offline.adoptUser(currentUser).catch(() => {}).then(async () => {
+			await updatePending();
+			await applyPendingToList();
+			if (!navigator.onLine) return;
+			await drainOutbox();
+			// Served from the cache although the browser is online: the server is out of reach.
+			refreshCachedPage();
+			warmComposer();
+		});
+	}
 })();

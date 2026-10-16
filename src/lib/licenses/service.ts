@@ -9,7 +9,7 @@ import { hashLicenseKey, normalizeLicensePlan, parseFeatures } from "./utils";
 
 const LICENSE_SETTINGS_ID = "default";
 
-async function getOrCreateLicenseSettings(env: CloudflareEnv) {
+async function getOrCreateLicenseSettings(env: Pick<CloudflareEnv, "DB">) {
 	const db = getDb(env);
 	await db
 		.insert(licenseSettings)
@@ -38,11 +38,11 @@ function toLicenseStatus(settings: typeof licenseSettings.$inferSelect): License
 	};
 }
 
-export async function getLicenseStatus(env: CloudflareEnv): Promise<LicenseStatus> {
+export async function getLicenseStatus(env: Pick<CloudflareEnv, "DB">): Promise<LicenseStatus> {
 	return toLicenseStatus(await getOrCreateLicenseSettings(env));
 }
 
-export async function getLicenseEntitlements(env: CloudflareEnv): Promise<LicenseEntitlements> {
+export async function getLicenseEntitlements(env: Pick<CloudflareEnv, "DB">): Promise<LicenseEntitlements> {
 	try {
 		const status = await getLicenseStatus(env);
 		// TODO: confirm Paymug's exact feature identifiers when they are documented; plan is authoritative meanwhile.

@@ -39,7 +39,7 @@ import { NavItem } from "./components-nav";
 import type { NavLink } from "./components-nav-types";
 import type { CustomFolder } from "./dashboard-nav-types";
 import {
-  getFolderNavCount,
+  getFolderNavBadge,
   moveMessagesToCustomFolder,
   moveMessagesToSystemFolder,
 } from "./dashboard-nav-utils";
@@ -76,24 +76,24 @@ export function DashboardNav({ className }: { className?: string }) {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const linksWithCounts: NavLink[] = links.map((link): NavLink => {
     if (link.href === "/inbox") {
-      return { ...link, count: getFolderNavCount("inbox", counts.folders) };
+      return { ...link, ...getFolderNavBadge("inbox", counts.folders) };
     }
     if (link.href === "/starred") {
-      return { ...link, count: getFolderNavCount("starred", counts.folders) };
+      return { ...link, ...getFolderNavBadge("starred", counts.folders) };
     }
     if (link.href === "/snoozed") {
-      return { ...link, count: getFolderNavCount("snoozed", counts.folders) };
+      return { ...link, ...getFolderNavBadge("snoozed", counts.folders) };
     }
     if (link.href === "/sent") {
-      return { ...link, count: getFolderNavCount("sent", counts.folders) };
+      return { ...link, ...getFolderNavBadge("sent", counts.folders) };
     }
     if (link.href === "/drafts") {
-      return { ...link, count: getFolderNavCount("drafts", counts.folders) };
+      return { ...link, ...getFolderNavBadge("drafts", counts.folders) };
     }
     if (link.href === "/archived") {
       return {
         ...link,
-        count: getFolderNavCount("archived", counts.folders),
+        ...getFolderNavBadge("archived", counts.folders),
         onMessageDrop: (messageIds: string[]) =>
           void moveMessagesToSystemFolder(messageIds, "archive"),
       };
@@ -101,7 +101,7 @@ export function DashboardNav({ className }: { className?: string }) {
     if (link.href === "/spam") {
       return {
         ...link,
-        count: getFolderNavCount("spam", counts.folders),
+        ...getFolderNavBadge("spam", counts.folders),
         onMessageDrop: (messageIds: string[]) =>
           void moveMessagesToSystemFolder(messageIds, "spam"),
       };
@@ -109,7 +109,7 @@ export function DashboardNav({ className }: { className?: string }) {
     if (link.href === "/trash") {
       return {
         ...link,
-        count: getFolderNavCount("trash", counts.folders),
+        ...getFolderNavBadge("trash", counts.folders),
         onMessageDrop: (messageIds: string[]) =>
           void moveMessagesToSystemFolder(messageIds, "trash"),
       };
@@ -262,6 +262,7 @@ export function DashboardNav({ className }: { className?: string }) {
             preloadMessages: true,
             iconColor: folder.color,
             count: counts.customFolders[folder.id]?.unread,
+            countLabel: `${counts.customFolders[folder.id]?.unread ?? 0} unread`,
             onMessageDrop: (messageIds: string[]) =>
               void moveMessagesToCustomFolder(messageIds, folder.id),
           }}

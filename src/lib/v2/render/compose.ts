@@ -42,7 +42,9 @@ function fromOptions(mailboxes: V2Mailbox[], draft: ComposeDraft): Html {
 /**
  * The composer, used docked (desktop), inline under a conversation, and as a
  * full page (mobile, drafts, new tab). Drafts save in the background; the
- * form itself only submits to send.
+ * form itself only submits to send. app.js fills composeKey for each composer
+ * it sets up: this markup can come from the offline cache, so the server must
+ * not pick the key.
  */
 export function renderComposer(
 	draft: ComposeDraft,
@@ -53,6 +55,7 @@ export function renderComposer(
 	const title = input.title ?? (draft.subject || (draft.inReplyTo ? "Reply" : "New message"));
 	return html`<form class="${cx("composer", `composer-${input.mode}`)}" id="${`composer-${input.key}`}" data-composer data-mode="${input.mode}" method="post" action="/v2/send" enctype="multipart/form-data" autocomplete="off">
 		<input type="hidden" name="draftId" value="${draft.id ?? ""}" data-draft-id>
+		<input type="hidden" name="composeKey" value="" data-compose-key>
 		<input type="hidden" name="inReplyTo" value="${draft.inReplyTo ?? ""}">
 		<input type="hidden" name="references" value="${draft.references ?? ""}">
 		<input type="hidden" name="threadId" value="${draft.threadId ?? ""}">
@@ -72,7 +75,7 @@ export function renderComposer(
 			</div>
 			<div class="cmp-field">
 				<label for="${`to-${input.key}`}">To</label>
-				<input id="${`to-${input.key}`}" name="to" value="${draft.to}" data-recipients list="v2-contacts" autocomplete="off" required>
+				<input id="${`to-${input.key}`}" name="to" value="${draft.to}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next" required>
 				<span class="cmp-toggles">
 					<button type="button" class="link-button" data-cmp-show="cc" ${showCc ? "hidden" : ""}>Cc</button>
 					<button type="button" class="link-button" data-cmp-show="bcc" ${showBcc ? "hidden" : ""}>Bcc</button>
@@ -80,11 +83,11 @@ export function renderComposer(
 			</div>
 			<div class="cmp-field" data-cmp-row="cc" ${showCc ? "" : "hidden"}>
 				<label for="${`cc-${input.key}`}">Cc</label>
-				<input id="${`cc-${input.key}`}" name="cc" value="${draft.cc}" data-recipients list="v2-contacts" autocomplete="off">
+				<input id="${`cc-${input.key}`}" name="cc" value="${draft.cc}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next">
 			</div>
 			<div class="cmp-field" data-cmp-row="bcc" ${showBcc ? "" : "hidden"}>
 				<label for="${`bcc-${input.key}`}">Bcc</label>
-				<input id="${`bcc-${input.key}`}" name="bcc" value="${draft.bcc}" data-recipients list="v2-contacts" autocomplete="off">
+				<input id="${`bcc-${input.key}`}" name="bcc" value="${draft.bcc}" data-recipients list="v2-contacts" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false" enterkeyhint="next">
 			</div>
 			<div class="cmp-field">
 				<input name="subject" value="${draft.subject}" placeholder="Subject" aria-label="Subject" data-cmp-subject>

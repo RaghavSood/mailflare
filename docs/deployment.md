@@ -79,6 +79,27 @@ Deploy the complete Worker with `npm run deploy` whenever the cron trigger is ad
 
 After upgrading an existing installation and confirming the cron trigger is active, the old Workflow can be removed with `npx wrangler workflows delete mailflare-database-backup`. Deleting it also removes its historical Workflow instances; backup files in R2 and rows in Mailflare's backup history are unaffected.
 
+## Push notifications
+
+Mailflare can send Web Push notifications for new mail to devices that turn them on (on iOS, only from the installed app). They are off until three settings exist:
+
+| Setting | Type | Value |
+| --- | --- | --- |
+| `VAPID_PUBLIC_KEY` | Secret or variable | Uncompressed P-256 public key, base64url |
+| `VAPID_PRIVATE_KEY` | Secret | The matching 32-byte private key, base64url |
+| `VAPID_SUBJECT` | Variable | A contact for push services: `mailto:you@example.com` or an `https://` URL |
+
+Generate a pair with Web Crypto, no dependencies (`npx web-push generate-vapid-keys` prints the same format):
+
+```bash
+node scripts/generate-vapid-keys.mjs mailto:you@example.com
+npx wrangler secret put VAPID_PUBLIC_KEY
+npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret put VAPID_SUBJECT
+```
+
+Apply the database update from the admin overview (migration `0036_add_push_subscriptions`). The admin overview then shows **Push notifications: Configured** and how many devices are subscribed. Notifications carry only the sender and subject, are skipped while the user has Mailflare open, and ride the outbound queue, so inbound mail never waits on a push service. A subscription belongs to the session that turned it on, so signing out (or a password change or reset, which ends other sessions) stops notifications on that device. Changing the key pair invalidates every existing subscription: rows made under the old key are deleted on the next delivery instead of being retried, and users turn notifications on again.
+
 ## Updating Mailflare
 
 The **Update Mailflare** button in the admin dashboard dispatches `.github/workflows/deploy-update.yml` in the installation repository. The workflow replaces the installation branch's complete tracked tree with the latest upstream source, commits that replacement, and pushes it. This avoids merge conflicts between independently created installation and upstream histories. Target-only committed files and code changes are intentionally removed; repository variables, secrets, and other GitHub or Cloudflare configuration remain unchanged. A connected Cloudflare Git integration then builds and deploys the change.

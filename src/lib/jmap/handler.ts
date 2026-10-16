@@ -3,6 +3,8 @@ import { authenticateApiRequest, hasScope } from "@/lib/api/key-auth";
 import { LIMITS } from "./constants";
 import { corsHeaders, JmapError, problemResponse } from "./errors";
 import { readBlob, storeUpload } from "./blobs";
+import { pruneChangeLog } from "./changes";
+import { forgetMemo } from "./context-utils";
 import { processRequest, sessionState, validateRequest } from "./processor";
 import { buildSession } from "./session";
 import { getEmailState, getMailboxState } from "./state";
@@ -35,6 +37,8 @@ export async function handleJmapRequest(request: Request, env: CloudflareEnv): P
 		return new Response(JSON.stringify({ error: "This API key does not have the jmap scope" }), { status: 403, headers: JSON_HEADERS });
 	}
 	const ctx: JmapContext = { env, db: getDb(env), auth, accountId: auth.userId, origin: env.APP_URL?.trim() || url.origin, createdIds: {} };
+	// Old change-log history is dropped from the front at most once an hour; a failure here must not fail the request.
+	await pruneChangeLog(ctx).catch((error) => console.warn("JMAP change log prune failed", error));
 
 	if (path === "/jmap/session" && request.method === "GET") {
 		return new Response(JSON.stringify(buildSession(ctx, await sessionState(ctx))), { headers: JSON_HEADERS });
@@ -97,9 +101,10 @@ export async function handleJmapRequest(request: Request, env: CloudflareEnv): P
 }
 
 /**
- * Server-sent events. Mailflare has no per-account change log, so the stream
- * sends the current states on connect and again whenever they move, polling
- * every `ping` seconds (default 30, minimum 10) until the client leaves.
+ * Server-sent events. The stream sends the current states on connect and
+ * again whenever they move, polling the change log every `ping` seconds
+ * (default 30, minimum 10) until the client leaves. One context serves the
+ * whole connection, so each tick forgets what the last one memoized.
  */
 function eventSource(ctx: JmapContext, url: URL): Response {
 	const ping = Math.max(Number(url.searchParams.get("ping") || 30), 10);
@@ -111,6 +116,7 @@ function eventSource(ctx: JmapContext, url: URL): Response {
 	const stream = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			const emit = async () => {
+				forgetMemo(ctx);
 				const [mailbox, email] = await Promise.all([getMailboxState(ctx), getEmailState(ctx)]);
 				const state = `${mailbox}|${email}`;
 				if (state === last) {

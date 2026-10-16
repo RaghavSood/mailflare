@@ -165,7 +165,7 @@ export function buildReplyQuoteHtml(
   bodyText: string | null | undefined,
   bodyHtml: string | null | undefined,
 ) {
-  const original = bodyHtml ? sanitizeEmailHtml(bodyHtml) : textToHtml(bodyText);
+  const original = (bodyHtml && sanitizeEmailHtml(bodyHtml)) || textToHtml(bodyText);
   if (!original) return null;
   const when = sentAt ? dayjs(sentAt).format("ddd, MMM D, YYYY [at] h:mm A") : "an earlier date";
   return wrapQuotedHtml(
@@ -248,7 +248,7 @@ export function buildForwardHtml(
   ];
   if (message.ccAddr) lines.push(`Cc: ${message.ccAddr}`);
   const header = `<div>---------- Forwarded message ---------<br>${lines.map(escapeHtml).join("<br>")}</div><br>`;
-  const original = bodyHtml ? sanitizeEmailHtml(bodyHtml) : textToHtml(bodyText);
+  const original = (bodyHtml && sanitizeEmailHtml(bodyHtml)) || textToHtml(bodyText);
   return wrapQuotedHtml(`${header}${original ?? ""}`);
 }
 

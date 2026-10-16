@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { assertAdmin } from "@/lib/auth/admin";
 import { requireUser } from "@/lib/auth/cookies";
 import { getBranding, updateBranding } from "@/lib/branding/service";
+import type { InstallIconUploads } from "@/lib/branding/types";
 import { getEnv } from "@/lib/cloudflare";
-import { BRANDING_ICON_TYPES, isBrandingIcon, MAX_BRANDING_ICON_SIZE } from "./utils";
+import { BRANDING_ICON_TYPES, isBrandingIcon, MAX_BRANDING_ICON_SIZE, validateInstallIcons } from "./utils";
 
 export async function GET() {
 	return NextResponse.json(await getBranding(getEnv()), {
@@ -32,9 +33,15 @@ export async function PUT(request: Request) {
 	if (icon && icon.size > MAX_BRANDING_ICON_SIZE) {
 		return NextResponse.json({ error: "Icon must be 2 MB or smaller" }, { status: 413 });
 	}
+	let installIcons: InstallIconUploads | null = null;
+	if (icon) {
+		const checked = await validateInstallIcons(form);
+		if ("error" in checked) return NextResponse.json({ error: checked.error }, { status: 400 });
+		installIcons = checked.icons;
+	}
 
 	try {
-		return NextResponse.json(await updateBranding(env, { appName, icon }));
+		return NextResponse.json(await updateBranding(env, { appName, icon, installIcons }));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Unable to update branding";
 		const status = /license is required/i.test(message) ? 403 : 500;

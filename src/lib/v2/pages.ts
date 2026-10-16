@@ -7,6 +7,7 @@ import { emptyDraft, loadDraft } from "./data/compose";
 import { loadList, loadListWindow, V2_PAGE_SIZE } from "./data/list";
 import { loadThread, markRead } from "./data/thread";
 import { renderComposePageMain, renderComposer } from "./render/compose";
+import { appNameOf } from "./render/branding";
 import { resolveTimeZone } from "./render/format";
 import { renderPage, type NavState } from "./render/layout";
 import { renderListMain } from "./render/list";
@@ -71,14 +72,14 @@ export async function withSenders(ctx: V2Context): Promise<V2Context> {
 
 function pageTitle(label: string, unread: number, ctx: V2Context): string {
 	const mailbox = ctx.mailboxes.find((item) => item.id === ctx.selectedMailboxId) ?? (ctx.mailboxes.length === 1 ? ctx.mailboxes[0] : null);
-	return `${label}${unread > 0 ? ` (${unread})` : ""}${mailbox ? ` - ${mailbox.address}` : ""} - Mailflare`;
+	return `${label}${unread > 0 ? ` (${unread})` : ""}${mailbox ? ` - ${mailbox.address}` : ""} - ${appNameOf(ctx)}`;
 }
 
 function notFound(ctx: V2Context, nav: NavState, message = "That page doesn't exist."): PageResult {
 	return {
 		status: 404,
 		body: renderPage(ctx, {
-			title: "Not found - Mailflare",
+			title: `Not found - ${appNameOf(ctx)}`,
 			nav,
 			main: html`<main id="main" class="main" hx-history-elt><div class="page" data-page="empty"><div class="empty"><p>${message}</p><p><a class="button" href="/v2/inbox">Go to Inbox</a></p></div></div></main>`,
 		}),
@@ -102,7 +103,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 		]);
 		if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
 		const composer = renderComposer(draft, { mailboxes: senders, mode: "page", key: draft.id ?? "page", returnHref: listHref("drafts") });
-		return { status: 200, body: renderPage(ctx, { title: `${draft.subject || "Draft"} - Mailflare`, nav, q, main: renderComposePageMain(composer), toast: extras.toast }) };
+		return { status: 200, body: renderPage(ctx, { title: `${draft.subject || "Draft"} - ${appNameOf(ctx)}`, nav, q, main: renderComposePageMain(composer), toast: extras.toast }) };
 	}
 
 	let folderName: string | null = null;
@@ -152,7 +153,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 			ownAddresses: own,
 			expandedIds,
 		});
-		return { status: 200, body: renderPage(ctx, { title: `${thread.subject?.trim() || "(no subject)"} - Mailflare`, nav, q, main, toast: extras.toast }) };
+		return { status: 200, body: renderPage(ctx, { title: `${thread.subject?.trim() || "(no subject)"} - ${appNameOf(ctx)}`, nav, q, main, toast: extras.toast }) };
 	}
 
 	const pageNumber = Math.max(1, Math.min(10_000, Number(ctx.url.searchParams.get("page")) || 1));
@@ -188,7 +189,7 @@ export async function renderComposePage(baseCtx: V2Context, draftId: string | nu
 	const draft = draftId ? await loadDraft(ctx.env, ctx.user, draftId) : emptyDraft(defaultSender(ctx));
 	if (!draft) return notFound(ctx, nav, "That draft was sent or discarded.");
 	const composer = renderComposer(draft, { mailboxes: ctx.mailboxes, mode: "page", key: draft.id ?? "new", returnHref: "/v2/inbox" });
-	return { status: 200, body: renderPage(ctx, { title: "Compose - Mailflare", nav, main: renderComposePageMain(composer) }) };
+	return { status: 200, body: renderPage(ctx, { title: `Compose - ${appNameOf(ctx)}`, nav, main: renderComposePageMain(composer) }) };
 }
 
 export function defaultSender(ctx: V2Context) {

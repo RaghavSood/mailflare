@@ -55,7 +55,6 @@ const DROP_CONTENT_TAGS = new Set([
 	"base",
 	"button",
 	"embed",
-	"form",
 	"iframe",
 	"input",
 	"link",
@@ -211,5 +210,6 @@ export function sanitizeEmailHtml(html: string | null): string | null {
 	for (const element of Array.from(document.body.querySelectorAll("*"))) {
 		sanitizeElement(element);
 	}
+	if (!document.body.textContent?.trim() && !document.body.querySelector("img")) return null;
 	return document.body.innerHTML;
 }

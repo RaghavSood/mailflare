@@ -70,6 +70,17 @@ export function buildMessageCounts(rows: MessageCountRow[]): MessageCounts {
 	};
 }
 
-export function getFolderLabelCount(folder: MessageFolder, counts: MessageCounts["folders"]) {
-	return counts[folder].unread;
+/**
+ * The number shown in a folder's sidebar badge. Drafts are stored as read and
+ * are never "unread", so Drafts counts every draft (as Gmail does); every
+ * other folder counts unread inbound mail.
+ */
+export function getFolderBadgeCount(folder: MessageFolder, counts: MessageCounts["folders"]): number {
+	return folder === "drafts" ? counts[folder].total : counts[folder].unread;
+}
+
+/** Accessible name for a folder badge, e.g. "3 unread" or "2 drafts". */
+export function getFolderBadgeLabel(folder: MessageFolder, count: number): string {
+	if (folder === "drafts") return `${count} ${count === 1 ? "draft" : "drafts"}`;
+	return `${count} unread`;
 }

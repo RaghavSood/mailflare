@@ -1,9 +1,15 @@
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
+import { getFolderBadgeCount, getFolderBadgeLabel } from "@/app/api/messages/counts/utils";
 import type { MessageCounts, MessageFolder } from "@/hooks/types";
 import { authFetch } from "@/lib/auth/client";
+import type { NavLink } from "./components-nav-types";
 
-export function getFolderNavCount(folder: MessageFolder, counts: MessageCounts["folders"]): number | undefined {
-	return counts[folder].unread;
+export function getFolderNavBadge(
+	folder: MessageFolder,
+	counts: MessageCounts["folders"],
+): Pick<NavLink, "count" | "countLabel"> {
+	const count = getFolderBadgeCount(folder, counts);
+	return { count, countLabel: getFolderBadgeLabel(folder, count) };
 }
 
 async function moveMessages(payload: { messageIds: string[]; action: BulkMessageAction; folderId?: string }) {

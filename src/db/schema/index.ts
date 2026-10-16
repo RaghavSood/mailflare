@@ -1,5 +1,6 @@
 import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 export const users = sqliteTable("users", {
 	id: text("id").primaryKey(),
@@ -189,20 +190,27 @@ export const folders = sqliteTable(
 	],
 );
 
-export const apiKeys = sqliteTable("api_keys", {
-	id: text("id").primaryKey(),
-	userId: text("user_id")
-		.notNull()
-		.references(() => users.id, { onDelete: "cascade" }),
-	name: text("name").notNull(),
-	prefix: text("prefix").notNull(),
-	keyHash: text("key_hash").notNull(),
-	scopes: text("scopes").notNull(),
-	createdAt: integer("created_at", { mode: "timestamp" })
-		.notNull()
-		.$defaultFn(() => new Date()),
-	lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
-});
+export const apiKeys = sqliteTable(
+	"api_keys",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		prefix: text("prefix").notNull(),
+		/** bcrypt hash; still written so an older build can verify the key, but only read for rows with no digest yet. */
+		keyHash: text("key_hash").notNull(),
+		/** Hex SHA-256 of the full key, the per-request verifier (migration 0039). Null until a pre-0039 key is next used. */
+		keyDigest: text("key_digest"),
+		scopes: text("scopes").notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.$defaultFn(() => new Date()),
+		lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+	},
+	(t) => [uniqueIndex("api_keys_key_digest_idx").on(t.keyDigest)],
+);
 
 export const messages = sqliteTable(
 	"messages",
@@ -223,6 +231,9 @@ export const messages = sqliteTable(
 		snippet: text("snippet"),
 		textBody: text("text_body"),
 		htmlBody: text("html_body"),
+		// UTF-8 bytes of text_body plus html_body, kept by triggers (migration 0040)
+		// so JMAP can report an Email's size without reading the bodies.
+		bodySize: integer("body_size"),
 		rawR2Key: text("raw_r2_key"),
 		status: text("status").notNull().default("received"),
 		read: integer("read", { mode: "boolean" }).notNull().default(false),
@@ -242,6 +253,10 @@ export const messages = sqliteTable(
 		spamSignals: text("spam_signals"),
 		spamAnalyzedAt: integer("spam_analyzed_at", { mode: "timestamp" }),
 		spamAnalysisError: text("spam_analysis_error"),
+		// When a send of this draft started; see claimDraftForSend.
+		sendClaimedAt: integer("send_claimed_at", { mode: "timestamp" }),
+		// The v2 composer that wrote this draft, kept on its sent copy; see saveDraft in src/lib/v2/data/compose.ts.
+		composeKey: text("compose_key"),
 		createdAt: integer("created_at", { mode: "timestamp" })
 			.notNull()
 			.$defaultFn(() => new Date()),
@@ -253,6 +268,8 @@ export const messages = sqliteTable(
 		index("messages_thread_idx").on(t.mailboxId, t.threadId),
 		index("messages_provider_message_idx").on(t.mailboxId, t.providerMessageId),
 		index("messages_raw_r2_key_idx").on(t.rawR2Key),
+		uniqueIndex("messages_compose_key_draft_idx").on(t.userId, t.composeKey).where(sql`${t.composeKey} IS NOT NULL AND ${t.status} = 'draft'`),
+		index("messages_compose_key_idx").on(t.userId, t.composeKey).where(sql`${t.composeKey} IS NOT NULL`),
 	],
 );
 
@@ -643,6 +660,65 @@ export const backups = sqliteTable(
 	],
 );
 
+/**
+ * Append-only log of JMAP-visible changes, written by triggers on `messages`
+ * and `folders` (migration 0033) so the `/changes` methods can answer from it.
+ * `seq` is the state clock; rows older than the retention window are pruned
+ * from the front, never from the middle.
+ */
+export const jmapChangeLog = sqliteTable(
+	"jmap_change_log",
+	{
+		seq: integer("seq").primaryKey({ autoIncrement: true }),
+		type: text("type", { enum: ["email", "mailbox"] }).notNull(),
+		objectId: text("object_id").notNull(),
+		userId: text("user_id").notNull(),
+		mailboxId: text("mailbox_id"),
+		threadKey: text("thread_key"),
+		kind: text("kind", { enum: ["created", "updated", "destroyed"] }).notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+	},
+	(t) => [
+		index("jmap_change_log_mailbox_seq_idx").on(t.mailboxId, t.seq),
+		index("jmap_change_log_user_seq_idx").on(t.userId, t.seq),
+		index("jmap_change_log_created_idx").on(t.createdAt),
+	],
+);
+
+/**
+ * A browser's Web Push subscription (migration 0036). `endpoint` is the push
+ * service URL the browser handed out; `p256dh` and `auth` are its message
+ * encryption keys, base64url as the PushSubscription JSON carries them. The
+ * row belongs to the session that subscribed, so signing out removes it, and
+ * `vapidKeyId` records which server key the browser subscribed with.
+ */
+export const pushSubscriptions = sqliteTable(
+	"push_subscriptions",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		sessionId: text("session_id")
+			.notNull()
+			.references(() => sessions.id, { onDelete: "cascade" }),
+		vapidKeyId: text("vapid_key_id").notNull(),
+		endpoint: text("endpoint").notNull().unique(),
+		p256dh: text("p256dh").notNull(),
+		auth: text("auth").notNull(),
+		userAgent: text("user_agent"),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.$defaultFn(() => new Date()),
+		lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+		failedAt: integer("failed_at", { mode: "timestamp" }),
+	},
+	(t) => [
+		index("push_subscriptions_user_idx").on(t.userId),
+		index("push_subscriptions_session_idx").on(t.sessionId),
+	],
+);
+
 export const schema = {
 	users,
 	domains,
@@ -670,4 +746,6 @@ export const schema = {
 	backups,
 	appSettings,
 	licenseSettings,
+	jmapChangeLog,
+	pushSubscriptions,
 };

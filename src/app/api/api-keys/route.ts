@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 		return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 	}
 
-	const { fullKey, prefix, hash } = generateApiKey();
+	const { fullKey, prefix, hash, digest } = await generateApiKey();
 	const db = getDb(env);
 	const id = newId("key");
 	await db.insert(apiKeys).values({
@@ -49,6 +49,7 @@ export async function POST(request: Request) {
 		name: parsed.data.name,
 		prefix,
 		keyHash: hash,
+		keyDigest: digest,
 		scopes: scopesToJson(parsed.data.scopes),
 	});
 

@@ -1,0 +1,20 @@
+<journey name="Read previously opened mail while offline">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, and the service worker has been registered by an earlier visit.
+		Pages the user has visited are kept for offline reading; search needs the server.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list and wait for it to load</action>
+		<action>Press the Android Back button once to return to the inbox</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Swipe up from the bottom of Quick Settings, or press the Back button, to close Quick Settings</action>
+		<action>Tap the menu button at the top left of the screen and tap "Inbox" in the drawer</action>
+		<action>Verify that a banner starting with "Offline" is shown at the top of the page and that the inbox message list is still shown</action>
+		<action>Verify that the "Search mail" field is no longer shown at the top: on a phone the "Offline" banner takes its place, because search runs on the server</action>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Verify that the conversation's subject and message text are shown, and that no browser error page or "You're offline" page is shown</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 10 seconds</action>
+		<action>Verify that the "Offline" banner is no longer shown</action>
+	</actions>
+</journey>

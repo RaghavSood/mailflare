@@ -1,0 +1,16 @@
+<journey name="Swipe rows to trash, undo, and archive">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, with at least three conversations in the list.
+		Swiping a row left moves it to Trash and swiping right archives it, through the same path as the toolbar actions.
+	</description>
+	<actions>
+		<action>Swipe the first conversation row from the right edge of the screen towards the left edge</action>
+		<action>Verify that a message reading "Conversation moved to Trash." with an "Undo" button appears near the bottom of the screen</action>
+		<action>Tap "Undo" in that message</action>
+		<action>Verify that the conversation that was swiped is back at the top of the inbox list</action>
+		<action>Swipe the first conversation row from the left edge of the screen towards the right edge</action>
+		<action>Verify that a message reading "Conversation archived." appears near the bottom of the screen and that row is no longer in the inbox list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Archive" in the drawer</action>
+		<action>Verify that the archived conversation is listed in Archive</action>
+	</actions>
+</journey>

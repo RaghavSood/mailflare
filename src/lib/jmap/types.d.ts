@@ -31,6 +31,8 @@ export type JmapContext = {
 	origin: string;
 	/** Client-assigned creation ids resolved so far in this request. */
 	createdIds: Record<string, JmapId>;
+	/** Per-request memo, see `memoize` in context-utils.ts. Created on first use. */
+	memo?: Map<string, Promise<unknown>>;
 };
 
 export type JmapMethodHandler = (ctx: JmapContext, args: Record<string, unknown>) => Promise<Record<string, unknown> | JmapMethodError>;
@@ -46,12 +48,14 @@ export type SystemRole = "inbox" | "sent" | "drafts" | "archive" | "junk" | "tra
 export type AccessibleMailbox = {
 	id: string;
 	userId: string;
+	domainId: string;
 	localPart: string;
 	hostname: string;
 	displayName: string | null;
 	permission: "read_only" | "send_as" | "send_on_behalf" | "full_access";
 	type: "personal" | "shared";
 	isPrimary: boolean;
+	useAllDomains: boolean;
 };
 
 export type EmailAddressObject = { name: string | null; email: string };

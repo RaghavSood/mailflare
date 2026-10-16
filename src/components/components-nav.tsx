@@ -14,6 +14,33 @@ import {
 } from "./components-nav-utils";
 import type { NavLink } from "./components-nav-types";
 
+function NavBadge({
+  count,
+  label,
+  minimal,
+}: {
+  count?: number;
+  label?: string;
+  minimal: boolean;
+}) {
+  if (typeof count !== "number" || count <= 0) return null;
+  const text = count > 99 ? "99+" : String(count);
+  return (
+    <span
+      title={label}
+      className={cn(
+        "rounded-full font-semibold tabular-nums",
+        minimal
+          ? "absolute -right-1 -top-1 min-w-4 bg-blue-600 px-1 text-center text-[10px] leading-4 text-white"
+          : "ml-auto mr-3 bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700",
+      )}
+    >
+      <span aria-hidden={label ? true : undefined}>{text}</span>
+      {label && <span className="sr-only">{label}</span>}
+    </span>
+  );
+}
+
 export function NavItem({ link }: { link: NavLink }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -80,16 +107,7 @@ export function NavItem({ link }: { link: NavLink }) {
           style={{ color: link.iconColor }}
         />
         {!minimal && <span className="flex-1">{link.label}</span>}
-        {!minimal && typeof link.count === "number" && link.count > 0 && (
-          <span className="ml-auto mr-3 rounded-full px-2 py-0.5 text-sm font-semibold text-neutral-700">
-            {link.count > 99 ? "99+" : link.count}
-          </span>
-        )}
-        {minimal && typeof link.count === "number" && link.count > 0 && (
-          <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-blue-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
-            {link.count > 99 ? "99+" : link.count}
-          </span>
-        )}
+        <NavBadge count={link.count} label={link.countLabel} minimal={minimal} />
       </button>
     );
   }
@@ -150,16 +168,7 @@ export function NavItem({ link }: { link: NavLink }) {
           size={18}
         />
         {!minimal && <span className="flex-1">{link.label}</span>}
-        {!minimal && typeof link.count === "number" && link.count > 0 && (
-          <span className="ml-auto mr-3 rounded-full px-2 py-0.5 text-sm font-semibold text-neutral-700">
-            {link.count > 99 ? "99+" : link.count}
-          </span>
-        )}
-        {minimal && typeof link.count === "number" && link.count > 0 && (
-          <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-blue-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
-            {link.count > 99 ? "99+" : link.count}
-          </span>
-        )}
+        <NavBadge count={link.count} label={link.countLabel} minimal={minimal} />
       </Link>
     </>
   );

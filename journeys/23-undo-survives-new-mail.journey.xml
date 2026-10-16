@@ -1,0 +1,14 @@
+<journey name="Undo stays on screen when new mail arrives">
+	<description>
+		Start: the Mailflare v2 inbox is open in Chrome and signed in, online, with at least two conversations in the list.
+		New mail is delivered from the computer through the server's email handler (README.md, "Deliver test mail"), with a subject no earlier message had. While a v2 list is on screen, new mail reloads it over the realtime connection; that reload must leave the message on screen alone, including its Undo button (#48).
+	</description>
+	<actions>
+		<action>Swipe the first conversation row from the left edge of the screen towards the right edge</action>
+		<action>Verify that a message reading "Conversation archived." with an "Undo" button appears near the bottom of the screen and that row is no longer in the inbox list</action>
+		<action>On the computer, deliver a new message to support@example.com with a new subject</action>
+		<action>Verify that within 8 seconds the new message appears at the top of the inbox list without the page reloading, and that the "Conversation archived." message with its "Undo" button is still shown</action>
+		<action>Tap "Undo" in that message</action>
+		<action>Verify that the archived conversation is back in the inbox list</action>
+	</actions>
+</journey>

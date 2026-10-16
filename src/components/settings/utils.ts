@@ -7,6 +7,7 @@ import type {
 	MailboxAutoReplyResponse,
 	MailboxAutoReplySettings,
 	MailboxSignatureResponse,
+	ApiKeySummary,
 } from "./types";
 import type {
 	AccountSettingsResponse,
@@ -120,6 +121,21 @@ export async function updatePassword(currentPassword: string, newPassword: strin
 }
 
 /** An API key limited to the JMAP scope, for external mail apps. */
+export async function listApiKeys(): Promise<ApiKeySummary[]> {
+	const res = await authFetch("/api/api-keys");
+	const data = (await res.json()) as { apiKeys?: ApiKeySummary[]; error?: unknown };
+	if (!res.ok) throw new Error(errorMessage(data, "Could not load API keys"));
+	return data.apiKeys ?? [];
+}
+
+export async function revokeApiKey(id: string): Promise<void> {
+	const res = await authFetch(`/api/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+	if (!res.ok) {
+		const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+		throw new Error(errorMessage(data, "Could not revoke the key"));
+	}
+}
+
 export async function createJmapApiKey(name: string): Promise<string> {
 	const res = await authFetch("/api/api-keys", {
 		method: "POST",

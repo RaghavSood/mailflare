@@ -219,6 +219,9 @@ export function ComposeForm({
 					return;
 				}
 				setDraftId(data.draft.id);
+				// A new draft changes the Drafts badge; later autosaves of the
+				// same draft do not, so only the first save refreshes counts.
+				if (!draftId) window.dispatchEvent(new Event("mailflare:messages-changed"));
 			}
 		}, 900);
 
@@ -400,8 +403,8 @@ export function ComposeForm({
 
 	const frameClass =
 		mode === "popup"
-			? "fixed bottom-4 right-4 z-40 flex h-[min(520px,calc(100vh-88px))] w-[min(560px,calc(100vw-32px))] flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl"
-			: "flex h-full min-h-[720px] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm";
+			? "fixed bottom-4 right-4 z-40 flex h-[min(520px,calc(100vh-88px))] w-[min(560px,calc(100vw-32px))] flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl max-sm:inset-0 max-sm:h-dvh max-sm:w-full max-sm:rounded-none max-sm:border-0 max-sm:pb-[env(safe-area-inset-bottom)]"
+			: "flex h-full min-h-[720px] max-sm:min-h-[calc(100dvh-12rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm";
 
 	return (
 		<>

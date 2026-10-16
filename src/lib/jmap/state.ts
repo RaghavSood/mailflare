@@ -1,38 +1,53 @@
-import { count, inArray, max, sql, sum } from "drizzle-orm";
-import { folders, messages } from "@/db/schema";
+import { currentSeq } from "./changes";
+import { formatMailboxState, formatSeqState } from "./changes-utils";
+import { forgetMemo, memoize } from "./context-utils";
 import type { JmapContext } from "./types";
 import { listAccessibleMailboxIdSet } from "./access";
 
 /**
- * Opaque state strings. Messages have no updated_at, so the Email state is a
- * digest of what a client would notice changing: row count, newest row, and
- * the flag and status tallies. Changes cannot be replayed from it, so
- * /changes answers cannotCalculateChanges and clients re-query.
+ * Opaque state strings, both read off the change log (migration 0033). The
+ * Email state is the newest log sequence; Thread state shares it. Sequences
+ * are global rather than per account: a client may see the state move and
+ * fetch an empty change set, which is one indexed query, and in exchange the
+ * log can be pruned from the front without per-account bookkeeping.
+ *
+ * Both are memoized on the request context, so a bundle of read methods
+ * costs one sequence read and one access lookup instead of one per method.
+ * Reusing a state read earlier in the request is safe: a later method can
+ * only return data at least as new as that state, so the worst case is a
+ * client asking for /changes since a state it is already past and getting
+ * changes it has seen. The reverse, a state newer than the data, would lose
+ * changes, and a first-read memo cannot produce it. Writes must not reuse
+ * the memo for their `newState`, which is what `refreshEmailState` and
+ * `refreshMailboxState` are for.
  */
-export async function getEmailState(ctx: JmapContext): Promise<string> {
-	const ids = Array.from(await listAccessibleMailboxIdSet(ctx));
-	if (ids.length === 0) return "0";
-	const [row] = await ctx.db
-		.select({
-			total: count(),
-			newest: max(sql<number>`${messages}.rowid`),
-			read: sum(sql`case when ${messages.read} then 1 else 0 end`),
-			starred: sum(sql`case when ${messages.starred} then 1 else 0 end`),
-			status: sum(sql`length(${messages.status})`),
-			folder: sum(sql`case when ${messages.folderId} is null then 0 else 1 end`),
-		})
-		.from(messages)
-		.where(inArray(messages.mailboxId, ids));
-	return [row?.total ?? 0, row?.newest ?? 0, row?.read ?? 0, row?.starred ?? 0, row?.status ?? 0, row?.folder ?? 0].join(".");
+export function getEmailState(ctx: JmapContext): Promise<string> {
+	return memoize(ctx, "emailState", async () => formatSeqState(await memoizedSeq(ctx)));
 }
 
-export async function getMailboxState(ctx: JmapContext): Promise<string> {
-	const ids = Array.from(await listAccessibleMailboxIdSet(ctx));
-	if (ids.length === 0) return "0";
-	const [row] = await ctx.db
-		.select({ total: count(), newest: max(sql<number>`${folders}.rowid`), names: sum(sql`length(${folders.name})`) })
-		.from(folders)
-		.where(inArray(folders.mailboxId, ids));
-	// Counts live on Mailbox objects, so the mailbox state moves with the email state too.
-	return `${ids.length}.${row?.total ?? 0}.${row?.newest ?? 0}.${row?.names ?? 0}.${await getEmailState(ctx)}`;
+/**
+ * Mailbox counts live on Mailbox objects, so the mailbox state moves with the
+ * email state; the digest of accessible mailbox ids catches mailboxes being
+ * added, removed or shared, which the log does not record.
+ */
+export function getMailboxState(ctx: JmapContext): Promise<string> {
+	return memoize(ctx, "mailboxState", async () => {
+		const [seq, ids] = await Promise.all([memoizedSeq(ctx), listAccessibleMailboxIdSet(ctx)]);
+		return formatMailboxState(seq, ids);
+	});
+}
+
+/** The state after this request wrote: forgets every memoized read, then reads again. */
+export function refreshEmailState(ctx: JmapContext): Promise<string> {
+	forgetMemo(ctx);
+	return getEmailState(ctx);
+}
+
+export function refreshMailboxState(ctx: JmapContext): Promise<string> {
+	forgetMemo(ctx);
+	return getMailboxState(ctx);
+}
+
+function memoizedSeq(ctx: JmapContext): Promise<number> {
+	return memoize(ctx, "seq", () => currentSeq(ctx));
 }

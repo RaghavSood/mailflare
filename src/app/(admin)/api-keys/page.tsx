@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { KeyRound, Plus } from "lucide-react";
+import { KeyRound, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -56,6 +56,19 @@ export default function ApiKeysPage() {
 			qc.invalidateQueries({ queryKey: ["api-keys"] });
 		},
 	});
+
+	const revoke = useMutation({
+		mutationFn: async (key: ApiKey) => {
+			const res = await authFetch(`/api/api-keys/${encodeURIComponent(key.id)}`, { method: "DELETE" });
+			if (!res.ok) throw new Error("Could not revoke the key");
+		},
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["api-keys"] }),
+	});
+
+	function confirmRevoke(key: ApiKey) {
+		if (!window.confirm(`Revoke "${key.name}"? Anything using this key will stop working immediately.`)) return;
+		revoke.mutate(key);
+	}
 
 	return (
 		<div className="space-y-6">
@@ -122,6 +135,7 @@ export default function ApiKeysPage() {
 			<section className="space-y-3">
 				<div className="flex items-center justify-between">
 					<span className="text-sm text-neutral-500">{(data?.apiKeys ?? []).length} total</span>
+					{revoke.isError && <span className="text-sm text-red-600">{(revoke.error as Error).message}</span>}
 				</div>
 				{isLoading && (
 					<CardGridSkeleton />
@@ -151,6 +165,16 @@ export default function ApiKeysPage() {
 									))}
 								</span>
 							</span>
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => confirmRevoke(key)}
+								disabled={revoke.isPending && revoke.variables?.id === key.id}
+								aria-label={`Revoke ${key.name}`}
+							>
+								<Trash2 className="h-4 w-4" />
+								Revoke
+							</Button>
 						</div>
 					))}
 				</div>

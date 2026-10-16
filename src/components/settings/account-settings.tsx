@@ -8,6 +8,7 @@ import { MfaSettings } from "./mfa-settings";
 import { ForwardingEmailForm } from "./forwarding-email-form";
 import { MailboxSignatureForm } from "./mailbox-signature-form";
 import { ProfileForm } from "./profile-form";
+import { PushNotificationsSettings } from "./push-notifications";
 import type { AccountSettingsResponse } from "./types";
 import { loadAccountSettings } from "./utils";
 
@@ -80,6 +81,16 @@ export function AccountSettings() {
 						</div>
 					<MailboxSignatureForm />
 					</div>
+				</div>
+			</section>
+
+			<section className="space-y-4">
+				<div>
+					<h2 className="text-xl font-semibold text-neutral-900">Notifications</h2>
+					<p className="mt-1 text-sm text-neutral-500">Get told about new mail on this device when Mailflare is closed.</p>
+				</div>
+				<div className="space-y-4 rounded-3xl bg-white p-6">
+					<PushNotificationsSettings />
 				</div>
 			</section>
 

@@ -113,3 +113,12 @@ export type CurrentMailboxFormResponse = {
 	};
 	error?: unknown;
 };
+
+export type ApiKeySummary = {
+	id: string;
+	name: string;
+	prefix: string;
+	scopes: string;
+	createdAt?: string;
+	lastUsedAt?: string | null;
+};

@@ -1,4 +1,4 @@
-import type { SettingsNavSection } from "./settings-nav-types";
+import type { SettingsNavItem, SettingsNavSection } from "./settings-nav-types";
 
 export const settingsNavSections: SettingsNavSection[] = [
 	{
@@ -35,4 +35,9 @@ export const settingsNavSections: SettingsNavSection[] = [
 
 export function isActiveSettingsPath(pathname: string, href: string): boolean {
 	return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/** Every link in section order, for the single tab strip shown on narrow screens. */
+export function flattenSettingsNavItems(sections: SettingsNavSection[]): SettingsNavItem[] {
+	return sections.flatMap((section) => section.items);
 }

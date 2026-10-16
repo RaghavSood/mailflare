@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Mail, ShieldCheck } from "lucide-react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TurnstileField } from "@/components/auth/turnstile";
+import { clearOfflineData } from "@/lib/auth/offline-data";
 import { submitLogin, submitMfaCode } from "./utils";
 
 export function LoginClient() {
@@ -19,6 +20,11 @@ export function LoginClient() {
   // Set once the password is accepted for an account with a second factor.
   const [challengeToken, setChallengeToken] = useState<string | null>(null);
   const [code, setCode] = useState("");
+
+  // Reaching sign-in means no session: drop any account's offline copies of v2.
+  useEffect(() => {
+    void clearOfflineData();
+  }, []);
 
   function finish(redirect?: string) {
     router.replace(redirect ?? "/inbox");
@@ -110,7 +116,7 @@ export function LoginClient() {
           </Button>
           <button
             type="button"
-            className="w-full text-center text-sm text-neutral-500 hover:text-neutral-800"
+            className="w-full text-center text-sm text-neutral-500 hover:text-neutral-800 max-md:min-h-11"
             onClick={() => {
               setChallengeToken(null);
               setCode("");

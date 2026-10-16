@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { MouseEvent } from "react";
-import { ChevronLeft, ChevronRight, ListFilter } from "lucide-react";
+import { ChevronLeft, ChevronRight, ListFilter, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -129,7 +129,7 @@ function MessageListRow({
 	}
 
 	const className =
-		`group relative grid min-h-12 w-full grid-cols-[24px_32px_minmax(160px,240px)_1fr_auto] items-center gap-3 px-6 text-left text-sm hover:z-10 hover:bg-[#f2f6fc] hover:shadow-sm ${active || selected ? "bg-blue-50" : ""
+		`group relative grid min-h-12 w-full grid-cols-[24px_32px_minmax(160px,240px)_1fr_auto] items-center gap-3 px-6 text-left max-md:grid-cols-[24px_32px_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0 max-md:px-3 max-md:py-2 text-sm hover:z-10 hover:bg-[#f2f6fc] hover:shadow-sm ${active || selected ? "bg-blue-50" : ""
 		} ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`;
 	const content = (
 		<>
@@ -160,7 +160,7 @@ function MessageListRow({
 					<span className="ml-2 text-xs text-neutral-500">{message.threadCount}</span>
 				)}
 			</span>
-			<span className="truncate text-neutral-700">
+			<span className="truncate text-neutral-700 max-md:col-span-2 max-md:col-start-3 max-md:row-start-2">
 				<span className={unread ? "font-semibold text-neutral-900" : ""}>
 					{rowMessage.subject ?? "(no subject)"}
 				</span>
@@ -168,7 +168,7 @@ function MessageListRow({
 			</span>
 			<time
 				dateTime={message.createdAt}
-				className={`min-w-[96px] whitespace-nowrap text-right text-xs group-hover:opacity-0 ${unread ? "font-semibold text-neutral-800" : "text-neutral-500"
+				className={`min-w-[96px] whitespace-nowrap text-right text-xs group-hover:opacity-0 max-md:col-start-4 max-md:row-start-1 max-md:min-w-0 ${unread ? "font-semibold text-neutral-800" : "text-neutral-500"
 					}`}
 			>
 				{formatMessageListTimestamp(message.createdAt)}
@@ -252,7 +252,8 @@ export function MessageFolderPage({
 	const [unreadOnly, setUnreadOnly] = useState(false);
 	const [conversationView] = useConversationView();
 	const grouped = conversationView && config.folder !== "drafts";
-	const { messages, isLoading, total, limit, updateMessages } = useMessages(config.folder, selectedMailbox?.id, {
+	const [refreshing, setRefreshing] = useState(false);
+	const { messages, isLoading, total, limit, updateMessages, refresh } = useMessages(config.folder, selectedMailbox?.id, {
 		query,
 		limit: pageSize,
 		offset,
@@ -304,6 +305,18 @@ export function MessageFolderPage({
 			emailAddress: mailboxAddress,
 		});
 	}, [config.title, mailboxAddress, mailboxesLoading, titleTotal, titleUnread]);
+
+	async function refreshList() {
+		setRefreshing(true);
+		try {
+			// Counts (sidebar badges) refresh through their own event; the list is awaited so the icon
+			// spins until the fresh page is in state.
+			window.dispatchEvent(new Event("mailflare:message-counts-changed"));
+			await refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}
 
 	function updateSelectedMessage(messageId: string, selected: boolean) {
 		const message = messages.find((item) => item.id === messageId);
@@ -404,6 +417,18 @@ export function MessageFolderPage({
 						<span className="text-xs text-neutral-500 whitespace-nowrap">
 							{pageRange.start} - {pageRange.end} of {pageRange.total}
 						</span>
+						<Tooltip label="Refresh">
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={refreshing || isLoading}
+								onClick={() => void refreshList()}
+								aria-label="Refresh messages"
+							>
+								<RefreshCw className={clsx("h-4 w-4", refreshing && "animate-spin")} />
+							</Button>
+						</Tooltip>
 						<Tooltip label="Previous page">
 							<Button
 								variant="ghost"

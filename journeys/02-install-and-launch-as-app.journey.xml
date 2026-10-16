@@ -1,0 +1,15 @@
+<journey name="Install Mailflare and launch it as an app">
+	<description>
+		Start: Chrome is open on http://localhost:3000/v2/inbox, signed in. The manifest scopes the app to /v2/ and starts it at /v2/inbox.
+	</description>
+	<actions>
+		<action>Tap Chrome's three-dot menu button at the top right of the screen</action>
+		<action>Tap the menu item named "Add to home screen" or "Install app"</action>
+		<action>Verify that a dialog offers to install or add "Mailflare" and shows the blue open-envelope icon</action>
+		<action>Tap "Install" (or "Add") in that dialog, and tap "Add" or "Add automatically" if a second confirmation appears</action>
+		<action>Press the Home button to go to the Android home screen</action>
+		<action>Verify that a "Mailflare" icon with a blue envelope is on the home screen; swipe left or open the app drawer to find it if it is not on the first page</action>
+		<action>Tap the "Mailflare" icon and wait for the app to open</action>
+		<action>Verify that the app opens without Chrome's address bar or tab buttons, and shows the Mailflare inbox with the "Search mail" field and the message list</action>
+	</actions>
+</journey>

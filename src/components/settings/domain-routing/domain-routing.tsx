@@ -172,7 +172,7 @@ export function DomainRouting({ domain }: DomainRoutingProps = {}) {
 
 			<Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
 				{/* The form grows when the action changes, so the dialog must scroll rather than overflow the viewport. */}
-				<DialogContent className="max-h-[calc(100vh-4rem)] overflow-y-auto sm:max-w-[560px]">
+				<DialogContent className="sm:max-w-[560px]">
 					<DialogHeader>
 						<DialogTitle>{editing ? "Edit rule" : "Add routing rule"}</DialogTitle>
 						<DialogDescription>Choose what happens to matching mail.</DialogDescription>

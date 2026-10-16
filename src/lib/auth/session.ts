@@ -51,6 +51,19 @@ export async function getUserFromSession(
 	return row?.user ?? null;
 }
 
+/** The id of the live session a token belongs to, for rows that must end with it. */
+export async function getSessionIdFromToken(env: CloudflareEnv, token: string | undefined): Promise<string | null> {
+	if (!token) return null;
+	const tokenHash = await hashSessionToken(token);
+	const [row] = await getDb(env)
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, new Date())))
+		.limit(1);
+	return row?.id ?? null;
+}
+
+/** Signing out deletes the session; its push subscriptions go with it (ON DELETE CASCADE). */
 export async function deleteSession(env: CloudflareEnv, token: string): Promise<void> {
 	const db = getDb(env);
 	const tokenHash = await hashSessionToken(token);

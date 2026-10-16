@@ -6,8 +6,9 @@ import {
 	type InboundQueueMessage,
 } from "./src/lib/email/inbound";
 import { processOutboundQueue, type OutboundQueueMessage } from "./src/lib/email/send";
-import { isInboundQueueMessage, isWebhookRetryMessage } from "./worker-utils";
+import { isInboundQueueMessage, isJmapPath, isPushMessage, isWebhookRetryMessage, withDefaultHeaders } from "./worker-utils";
 import { processWebhookRetry, type WebhookRetryMessage } from "./src/lib/email/webhooks";
+import { processPushMessage } from "./src/lib/push/delivery";
 import { resolveIncomingMail, forwardMessage } from "./src/lib/email/incoming";
 import { getUserFromSession } from "./src/lib/auth/session";
 import { getSessionTokenFromRequest } from "./src/lib/realtime/utils";
@@ -16,6 +17,9 @@ import {
 	MAILFLARE_FORWARDED_HEADER,
 } from "./src/lib/email/account-forwarding";
 import { runScheduledDatabaseBackup } from "./src/lib/backups/runner";
+import { handleJmapRequest } from "./src/lib/jmap/handler";
+import { corsHeaders } from "./src/lib/jmap/errors";
+import { getSecurityHeaders } from "./src/lib/security/headers";
 export { RealtimeHub } from "./src/lib/realtime/hub";
 
 export default {
@@ -33,6 +37,19 @@ export default {
 
 			const hub = env.REALTIME.getByName(user.id);
 			return hub.fetch(new Request("https://mailflare-realtime/connect", request));
+		}
+
+		// JMAP is framework-free, so it is answered here without starting Next. The Next routes
+		// under src/app/jmap stay for the Node runtime, which never passes through this file.
+		if (isJmapPath(url.pathname)) {
+			const response = await handleJmapRequest(request, env).catch((error: unknown) => {
+				console.error("JMAP request failed", error);
+				return new Response(JSON.stringify({ error: "Internal server error" }), {
+					status: 500,
+					headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...corsHeaders() },
+				});
+			});
+			if (response) return withDefaultHeaders(response, getSecurityHeaders());
 		}
 
 		return nextHandler.fetch(request, env, ctx);
@@ -83,6 +100,9 @@ export default {
 					await processInboundMessage(env, msg.body);
 				} else if (isWebhookRetryMessage(msg.body)) {
 					await processWebhookRetry(env, msg.body as WebhookRetryMessage);
+				} else if (isPushMessage(msg.body)) {
+					// Retries are re-enqueued per subscription inside, so other devices are not notified twice.
+					await processPushMessage(env, msg.body);
 				} else {
 					await processOutboundQueue(env, msg.body as OutboundQueueMessage);
 				}

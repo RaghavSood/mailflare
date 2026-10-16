@@ -1,0 +1,16 @@
+<journey name="Sign in lands in the v2 inbox">
+	<description>
+		Start: Chrome is open on http://localhost:3000/v2/inbox and nobody is signed in, so the app shows the Mailflare sign-in page.
+		Opening a v2 page while signed out remembers v2, so signing in must come back to the v2 inbox rather than the classic one.
+	</description>
+	<actions>
+		<action>Verify that the page shows a "Sign in" heading with an Email field and a Password field</action>
+		<action>Tap the Email field and type "admin@example.com"</action>
+		<action>Tap the Password field and type "demo-password-change-me"</action>
+		<action>Tap the "Sign in" button and wait for the next page to finish loading</action>
+		<action>Verify that the address bar shows a URL ending in "/v2/inbox"</action>
+		<action>Verify that the page shows a "Search mail" field at the top, an "Inbox" heading above the message list, and at least one message row with a sender name and a subject</action>
+		<action>Verify that a round compose button with a pencil icon is shown at the bottom right of the screen</action>
+		<action>Verify that the page fits the screen width: no message row is cut off on the right and there is no horizontal scrollbar</action>
+	</actions>
+</journey>

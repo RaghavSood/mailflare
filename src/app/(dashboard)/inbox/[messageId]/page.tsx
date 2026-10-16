@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronRight, Cloud, ExternalLink } from "lucide-react";
 import dayjs from "dayjs";
@@ -22,7 +22,7 @@ import { MessageHeaderDetails } from "@/components/messages/message-header-detai
 import { getHiddenEnvelopeRecipient } from "@/components/messages/message-header-details-utils";
 import { useMessageThread } from "@/components/messages/use-message-thread";
 import { useLatestMessagesFirst } from "@/components/messages/use-latest-messages-first";
-import { getMessageBackHref } from "@/components/message-actions/utils";
+import { getMessageBackHref, getMessageListHref } from "@/components/message-actions/utils";
 import { getEmailAddress, getEmailDisplayName, splitEmailAddressList } from "@/lib/email/address";
 import type { MessageAttachment, MessageDetailResponse } from "./types";
 import {
@@ -39,6 +39,7 @@ import { sanitizeEmailHtml } from "./email-html-sanitizer";
 
 export default function MessageDetailPage() {
   const params = useParams<{ messageId: string }>();
+  const pathname = usePathname();
   const { selectedMailbox, mailboxes } = useSelectedMailbox();
   const messageId = params.messageId;
   const [data, setData] = useState<MessageDetailResponse | null>(null);
@@ -145,7 +146,16 @@ export default function MessageDetailPage() {
     <div className="h-full overflow-y-auto overscroll-contain scrollbar-gutter-stable">
       {!message.read && <MarkAsRead messageId={message.id} />}
       <div className="flex pt-3 pb-2.75 items-center justify-between px-2 border-b border-neutral-200 sticky top-0 bg-white">
-        <div className="flex-1" />
+        <div className="flex-1">
+          {/* Below lg the split layout hides the list, so the reader needs its own way back. */}
+          <Link
+            href={getMessageListHref(pathname, message.id) ?? getMessageBackHref(message.direction, message.status)}
+            className="flex h-11 w-11 items-center justify-center rounded-full text-neutral-600 hover:bg-neutral-100 lg:hidden"
+            aria-label="Back to list"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Link>
+        </div>
         {/* <div className="flex items-center flex-row gap-6">
 					<Link
 						href={getMessageBackHref(message.direction, message.status)}
@@ -171,8 +181,8 @@ export default function MessageDetailPage() {
           bodyHtml={body?.htmlBody}
         />
       </div>
-      <div className="px-6 pb-2 pt-4">
-        <h1 className="text-2xl text-neutral-900">
+      <div className="px-6 pb-2 pt-4 max-sm:px-4">
+        <h1 className="text-2xl text-neutral-900 break-words max-sm:text-xl">
           {message.subject ?? "(no subject)"}
         </h1>
       </div>
@@ -194,8 +204,8 @@ export default function MessageDetailPage() {
         expandedAll={threadExpanded}
         onExpandedAllChange={setThreadExpanded}
       />
-      <article className="px-6 py-4">
-        <div className="flex items-start justify-between pb-5">
+      <article className="px-6 py-4 max-sm:px-4">
+        <div className="flex items-start justify-between pb-5 max-sm:flex-wrap max-sm:gap-y-1">
           <div className="flex min-w-0 items-start gap-3">
             <ContactAvatar
               mailboxId={message.mailboxId}
@@ -251,8 +261,8 @@ export default function MessageDetailPage() {
               <MessageHeaderDetails key={message.id} message={message} />
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <p className="text-xs">
+          <div className="flex shrink-0 items-center gap-2 max-sm:w-full max-sm:justify-end">
+            <p className="text-xs max-sm:mr-auto max-sm:pl-11 max-sm:text-neutral-500">
               {dayjs(message.createdAt).format("MMM DD, YYYY, hh:mmA")}
             </p>
             <ThreadMessageActions
@@ -265,7 +275,7 @@ export default function MessageDetailPage() {
         </div>
         <div className="prose max-w-none text-neutral-900">
           {htmlBody ? (
-            <div className="email-body mx-auto" dangerouslySetInnerHTML={{ __html: htmlBody }} />
+            <div className="email-body mx-auto max-md:overflow-x-auto" dangerouslySetInnerHTML={{ __html: htmlBody }} />
           ) : (
             <pre className="whitespace-pre-wrap text-sm text mx-auto">
               {cloudAttachmentResult.content}

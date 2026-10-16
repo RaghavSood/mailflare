@@ -1,15 +1,20 @@
 "use client";
 
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Copy, KeyRound } from "lucide-react";
+import { Copy, KeyRound, Trash2 } from "lucide-react";
+import { parseApiKeyScopes } from "@/app/(admin)/api-keys/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createJmapApiKey } from "./utils";
+import type { ApiKeySummary } from "./types";
+import { createJmapApiKey, listApiKeys, revokeApiKey } from "./utils";
 
 /**
  * Settings > Account card for connecting an external mail app over JMAP.
- * Mints an API key with the `jmap` scope and shows the details once.
+ * Mints an API key with the `jmap` scope, shows the details once, and lists
+ * the account's keys so any of them can be revoked.
  */
 export function EmailClientsSettings() {
 	const [name, setName] = useState("");
@@ -18,6 +23,14 @@ export function EmailClientsSettings() {
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState<string | null>(null);
 	const server = typeof window !== "undefined" ? window.location.origin : "";
+	const qc = useQueryClient();
+	const keysQuery = useQuery({ queryKey: ["api-keys"], queryFn: listApiKeys });
+	const keys = keysQuery.data ?? null;
+	const revoke = useMutation({
+		mutationFn: (item: ApiKeySummary) => revokeApiKey(item.id),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["api-keys"] }),
+	});
+	const listError = keysQuery.error ?? revoke.error;
 
 	async function submit(event: React.FormEvent) {
 		event.preventDefault();
@@ -26,11 +39,17 @@ export function EmailClientsSettings() {
 		try {
 			setKey(await createJmapApiKey(name.trim() || "Mail app"));
 			setName("");
+			await qc.invalidateQueries({ queryKey: ["api-keys"] });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Could not create a key");
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	function confirmRevoke(item: ApiKeySummary) {
+		if (!window.confirm(`Revoke "${item.name}"? Apps using this key will stop working immediately.`)) return;
+		revoke.mutate(item);
 	}
 
 	function copy(label: string, value: string) {
@@ -48,8 +67,11 @@ export function EmailClientsSettings() {
 					<Field label="Username" value="any value" onCopy={copy} copied={copied} />
 					<Field label="Password (API key)" value={key} onCopy={copy} copied={copied} mono />
 					<p className="text-xs text-neutral-500">
-						This key is shown once. It can be revoked from the API keys page. Session discovery is at <code>{server}/.well-known/jmap</code>.
+						This key is shown once. It can be revoked from the list below at any time. Session discovery is at <code>{server}/.well-known/jmap</code>.
 					</p>
+					<Button type="button" variant="outline" size="sm" onClick={() => setKey(null)}>
+						Done
+					</Button>
 				</div>
 			) : (
 				<form onSubmit={submit} className="flex flex-wrap items-end gap-3">
@@ -61,9 +83,41 @@ export function EmailClientsSettings() {
 						<KeyRound className="h-4 w-4" />
 						{busy ? "Creating..." : "Create app password"}
 					</Button>
-					{error && <p className="w-full text-sm text-red-600">{error}</p>}
 				</form>
 			)}
+			{error && <p className="text-sm text-red-600">{error}</p>}
+			<div className="space-y-2">
+				<p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Your API keys</p>
+				{listError && <p className="text-sm text-red-600">{listError instanceof Error ? listError.message : "Something went wrong"}</p>}
+				{keys === null && !listError && <p className="text-sm text-neutral-400">Loading...</p>}
+				{keys?.length === 0 && <p className="text-sm text-neutral-400">No API keys yet.</p>}
+				{keys?.map((item) => (
+					<div key={item.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white px-3 py-2">
+						<span className="min-w-0 flex-1">
+							<span className="block truncate text-sm font-medium text-neutral-900">{item.name}</span>
+							<span className="block truncate font-mono text-xs text-neutral-500">{item.prefix}...</span>
+						</span>
+						<span className="flex flex-wrap gap-1">
+							{parseApiKeyScopes(item.scopes).map((scope) => (
+								<Badge key={scope} variant="outline">
+									{scope}
+								</Badge>
+							))}
+						</span>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							onClick={() => confirmRevoke(item)}
+							disabled={revoke.isPending && revoke.variables?.id === item.id}
+							aria-label={`Revoke ${item.name}`}
+						>
+							<Trash2 className="h-4 w-4" />
+							{revoke.isPending && revoke.variables?.id === item.id ? "Revoking..." : "Revoke"}
+						</Button>
+					</div>
+				))}
+			</div>
 		</div>
 	);
 }

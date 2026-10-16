@@ -1,7 +1,7 @@
 import type { DatabaseBackupDocument, DatabaseBackupTable, DatabaseRecord } from "./types";
 import { mergeLegacyMessageBodies } from "./utils";
 
-const BACKUP_TABLES: DatabaseBackupTable[] = ["users", "domains", "mailboxes", "mailbox_access", "contacts", "folders", "api_keys", "messages", "message_attachments", "outbound_jobs", "routing_rules", "webhooks", "webhook_deliveries", "sessions", "audit_logs", "backup_settings", "backups", "app_settings", "license_settings", "email_templates", "calendar_events", "auto_reply_deliveries", "spam_token_stats", "spam_reputation", "spam_feedback", "mailbox_aliases", "password_reset_tokens", "mfa_recovery_codes", "login_challenges"];
+const BACKUP_TABLES: DatabaseBackupTable[] = ["users", "domains", "mailboxes", "mailbox_access", "contacts", "folders", "api_keys", "messages", "message_attachments", "outbound_jobs", "routing_rules", "webhooks", "webhook_deliveries", "sessions", "audit_logs", "backup_settings", "backups", "app_settings", "license_settings", "email_templates", "calendar_events", "auto_reply_deliveries", "spam_token_stats", "spam_reputation", "spam_feedback", "mailbox_aliases", "password_reset_tokens", "mfa_recovery_codes", "login_challenges", "push_subscriptions"];
 /**
  * Tables every backup document must contain. Tables added to BACKUP_TABLES
  * after the format shipped are absent from older documents, so they stay
@@ -21,9 +21,11 @@ export function getBackupConfigurationStatus(_env?: CloudflareEnv) {
 const INTERNAL_TABLE_PATTERNS = ["sqlite_%", "_cf%", "messages_fts%", "conversation_view%"];
 /**
  * The search index is derived data: its triggers repopulate it as messages are
- * restored, so it is neither exported nor part of the coverage check.
+ * restored, so it is neither exported nor part of the coverage check. The JMAP
+ * change log is likewise not backed up: a restore invalidates every client's
+ * sync state anyway, so it is cleared afterwards and clients resync.
  */
-const INTERNAL_TABLES = ["d1_migrations"];
+const INTERNAL_TABLES = ["d1_migrations", "jmap_change_log"];
 
 /**
  * Fails the backup when the database contains a table BACKUP_TABLES does not
@@ -70,6 +72,10 @@ export async function restoreDatabaseRecords(db: D1Database, content: ArrayBuffe
 			if (statements.length > 0) await db.batch(statements);
 		}
 	}
+	// The restore fired the change-log triggers for every deleted and re-inserted
+	// row. None of that history is meaningful to a client, so drop it: any client
+	// holding an older state gets cannotCalculateChanges and resyncs from scratch.
+	await db.prepare("DELETE FROM jmap_change_log").run();
 }
 
 function parseDatabaseBackup(content: ArrayBuffer): DatabaseBackupDocument {

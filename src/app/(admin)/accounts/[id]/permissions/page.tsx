@@ -39,8 +39,8 @@ export default function AccountPermissionsPage() {
 				<h1 className="text-3xl font-medium text-neutral-900">Permissions</h1>
 				<p className="mt-2 text-sm text-neutral-500">Control what this account can manage.</p>
 			</div>
-			<div className="overflow-hidden rounded-3xl bg-white">
-				<table className="w-full text-left">
+			<div className="overflow-hidden rounded-3xl bg-white max-md:overflow-x-auto">
+				<table className="w-full text-left max-md:min-w-[560px]">
 					<thead className="border-b border-neutral-100 bg-neutral-50 text-xs font-semibold uppercase tracking-wide text-neutral-500">
 						<tr>
 							<th className="px-5 py-3">Permission</th>

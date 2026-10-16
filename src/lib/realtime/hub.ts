@@ -18,6 +18,12 @@ export class RealtimeHub extends DurableObject<CloudflareEnv> {
 			return new Response(null, { status: 101, webSocket: client });
 		}
 
+		// Whether the user has the app open, so the push producer can stay quiet.
+		if (url.pathname === "/connections") {
+			const connections = this.ctx.getWebSockets().filter((socket) => socket.readyState === WebSocket.OPEN).length;
+			return Response.json({ connections });
+		}
+
 		if (url.pathname === "/notify" && request.method === "POST") {
 			const payload = (await request.json()) as NewMessageNotification;
 			const message = JSON.stringify(payload);
@@ -38,5 +44,15 @@ export class RealtimeHub extends DurableObject<CloudflareEnv> {
 
 	webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
 		if (message === "ping") socket.send("pong");
+	}
+
+	// A v2 page closes its socket once it is hidden (app.js), and the push producer counts only open
+	// sockets. Answer the close at once: unanswered, the socket stays open here until the client gives up.
+	webSocketClose(socket: WebSocket): void {
+		try {
+			socket.close(1000, "Closed");
+		} catch {
+			/* already closed */
+		}
 	}
 }

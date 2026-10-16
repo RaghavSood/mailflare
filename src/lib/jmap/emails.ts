@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { messages } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { buildSnippet, parseRawMime } from "@/lib/email/parse";
@@ -10,11 +10,15 @@ import { deleteMessageWithObjects } from "@/lib/email/message-cleanup";
 import { LIMITS, KEYWORD_FLAGGED, KEYWORD_SEEN } from "./constants";
 import { JmapError, invalidArguments } from "./errors";
 import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
-import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
-import { importFlags, parseReceivedAt, resolveDraftsMailbox } from "./email-import-utils";
+import { buildEmailObject, loadAttachmentsByMessage, pickEmailProperties } from "./email-objects";
+import { chunkForParameters, emailNeedsAttachments, emailNeedsBodies } from "./email-objects-utils";
+import { importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
-import { getEmailState } from "./state";
-import { listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
+import { QUERY_WINDOW, describeEmailQueryShape, planEmailQueryPage, queryLimit, windowedPage } from "./email-query-utils";
+import { currentSeq, exceedsFetchLimit, loadChangeRows, loadThreadMembers, locateHistory } from "./changes";
+import { classifyChanges, classifyThreadChanges, diffQueryResults, formatSeqState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
+import { getEmailState, refreshEmailState } from "./state";
+import { findJmapMailbox, listAccessibleMailboxIdSet, listJmapMailboxes } from "./access";
 import { deleteUpload, readUpload, storeRawDraftMime } from "./blobs";
 import type { Comparator, EmailAddressObject, Filter, JmapContext, JmapMethodHandler, JmapSetError, MailboxRef } from "./types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
@@ -75,10 +79,49 @@ async function scope(ctx: JmapContext) {
 	return { ids, condition: ids.length ? inArray(messages.mailboxId, ids) : eq(messages.userId, ctx.auth.userId) };
 }
 
-export async function loadMessages(ctx: JmapContext, ids: string[]): Promise<MessageRow[]> {
+const BODY_COLUMNS = new Set(["textBody", "htmlBody", "bodySize"]);
+
+/**
+ * The columns of a message row without its bodies. `htmlBody` is read only
+ * for a row with no snippet, since that is all `preview` falls back to, and
+ * `bodySize` is computed for a row the 0040 backfill has not reached, so a
+ * light row answers every property but the body parts exactly as a full one.
+ */
+function lightMessageColumns() {
+	const columns = getTableColumns(messages);
+	return {
+		...(Object.fromEntries(Object.entries(columns).filter(([key]) => !BODY_COLUMNS.has(key))) as Omit<typeof columns, "textBody" | "htmlBody" | "bodySize">),
+		htmlBody: sql<string | null>`case when ${messages.snippet} is null then ${messages.htmlBody} end`,
+		bodySize: sql<number>`coalesce(${messages.bodySize}, length(cast(coalesce(${messages.textBody}, '') as blob)) + length(cast(coalesce(${messages.htmlBody}, '') as blob)))`,
+	};
+}
+
+/**
+ * Rows for `ids` the account can see. With `bodies: false` the text and HTML
+ * bodies stay in the database (see `lightMessageColumns`); the row's
+ * `textBody` is then null. Ids are split into IN lists D1 can bind next to
+ * the scope's own parameters; rows come back once each, in the order of
+ * `ids`, whatever plan or chunking produced them.
+ */
+export async function loadMessages(ctx: JmapContext, ids: string[], options: { bodies?: boolean } = {}): Promise<MessageRow[]> {
 	if (ids.length === 0) return [];
-	const { condition } = await scope(ctx);
-	return ctx.db.select().from(messages).where(and(condition, inArray(messages.id, ids)));
+	const { ids: scopeIds } = await scope(ctx);
+	// The same rows as scope(), but the unary + keeps the mailbox (or user) term
+	// out of index selection, so SQLite looks each id up by primary key instead
+	// of walking every message the account can see and filtering by id.
+	const condition = scopeIds.length ? inArray(sql`+${messages.mailboxId}`, scopeIds) : sql`+${messages.userId} = ${ctx.auth.userId}`;
+	const unique = Array.from(new Set(ids));
+	const chunks = chunkForParameters(unique, Math.max(scopeIds.length, 1));
+	let rows: MessageRow[];
+	if (options.bodies === false) {
+		const columns = lightMessageColumns();
+		const found = await Promise.all(chunks.map((part) => ctx.db.select(columns).from(messages).where(and(condition, inArray(messages.id, part)))));
+		rows = found.flat().map((row) => ({ ...row, textBody: null }));
+	} else {
+		rows = (await Promise.all(chunks.map((part) => ctx.db.select().from(messages).where(and(condition, inArray(messages.id, part)))))).flat();
+	}
+	const byId = new Map(rows.map((row) => [row.id, row]));
+	return unique.flatMap((id) => byId.get(id) ?? []);
 }
 
 export const emailGet: JmapMethodHandler = async (ctx, args) => {
@@ -88,71 +131,176 @@ export const emailGet: JmapMethodHandler = async (ctx, args) => {
 	const properties = args.properties as string[] | null | undefined;
 	const fetchBodies = !!(args.fetchTextBodyValues || args.fetchHTMLBodyValues || args.fetchAllBodyValues);
 	const maxBodyValueBytes = Number(args.maxBodyValueBytes ?? 0);
+	const bodiesLoaded = emailNeedsBodies(properties, fetchBodies);
 
-	const rows = await loadMessages(ctx, ids);
-	const attachments = await loadAttachmentsByMessage(ctx, rows.map((row) => row.id));
+	const rows = await loadMessages(ctx, ids, { bodies: bodiesLoaded });
+	const attachments = emailNeedsAttachments(properties) ? await loadAttachmentsByMessage(ctx, rows.map((row) => row.id)) : new Map();
 	const found = new Set<string>();
 	const list = rows.map((row) => {
 		found.add(row.id);
-		const full = buildEmailObject(row, attachments.get(row.id) ?? [], { fetchBodies, maxBodyValueBytes });
-		if (!properties) return full;
-		const picked: Record<string, unknown> = { id: row.id };
-		for (const key of properties) {
-			if (key.startsWith("header:")) picked[key] = resolveHeaderProperty(row, key);
-			else if (key in full) picked[key] = (full as Record<string, unknown>)[key];
-		}
-		return picked;
+		return pickEmailProperties(row, attachments.get(row.id) ?? [], properties, { fetchBodies, maxBodyValueBytes, bodiesLoaded });
 	});
-	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: ids.filter((id) => !found.has(id)) };
+	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: Array.from(new Set(ids)).filter((id) => !found.has(id)) };
 };
 
-export const emailQuery: JmapMethodHandler = async (ctx, args) => {
+/** The WHERE and ORDER BY an Email/query's filter and sort describe, within the accessible mailboxes. */
+async function emailQueryParts(ctx: JmapContext, args: Record<string, unknown>) {
 	const { ids: accessibleIds, condition } = await scope(ctx);
 	const filter = filterToSql(args.filter as Filter | null | undefined, new Set(accessibleIds));
 	const where = filter ? and(condition, filter) : condition;
 	const order = sortToSql(args.sort as Comparator[] | null | undefined);
-	const collapse = !!args.collapseThreads;
-	const limit = Math.min(Math.max(Number(args.limit ?? LIMITS.maxQueryLimit), 0), LIMITS.maxQueryLimit);
-	let position = Number(args.position ?? 0);
+	return { where, order, condition, accessibleIds };
+}
 
-	// Anchors are resolved by materialising the ordered id list up to a bound;
-	// mailboxes here are small enough that this stays cheap.
+/**
+ * The ordered id list a query describes, materialised up to QUERY_WINDOW.
+ * Anchors, negative positions and collapseThreads need the whole list;
+ * `Email/queryChanges` shares it so both see the same order.
+ */
+async function runEmailQuery(ctx: JmapContext, args: Record<string, unknown>) {
+	const { where, order, condition, accessibleIds } = await emailQueryParts(ctx, args);
+	const collapse = !!args.collapseThreads;
 	const threadKey = sql<string>`coalesce(${messages.threadId}, ${messages.id})`;
 	const allRows = await ctx.db
 		.select({ id: messages.id, thread: threadKey })
 		.from(messages)
 		.where(where)
 		.orderBy(...order)
-		.limit(10_000);
+		.limit(QUERY_WINDOW);
 	let ordered = allRows.map((row) => row.id);
 	if (collapse) {
 		const seen = new Set<string>();
 		ordered = allRows.filter((row) => (seen.has(row.thread) ? false : (seen.add(row.thread), true))).map((row) => row.id);
 	}
+	return { ordered, collapse, condition, accessibleIds };
+}
+
+/**
+ * A plain page (no anchor, no collapseThreads, position >= 0) is read with
+ * LIMIT/OFFSET in the same ORDER BY, so only that page leaves the database;
+ * the total is a count(*) run only when asked for. Both stop at
+ * QUERY_WINDOW, as the materialised list does.
+ */
+async function pageEmailQuery(ctx: JmapContext, args: Record<string, unknown>, page: { position: number; limit: number }) {
+	const { where, order } = await emailQueryParts(ctx, args);
+	const bounds = windowedPage(page);
+	const [rows, counted] = await Promise.all([
+		bounds ? ctx.db.select({ id: messages.id }).from(messages).where(where).orderBy(...order).limit(bounds.limit).offset(bounds.offset) : [],
+		args.calculateTotal ? ctx.db.select({ total: count() }).from(messages).where(where) : null,
+	]);
+	return { ids: rows.map((row) => row.id), total: counted ? Math.min(counted[0]?.total ?? 0, QUERY_WINDOW) : undefined };
+}
+
+export const emailQuery: JmapMethodHandler = async (ctx, args) => {
+	const page = planEmailQueryPage(args);
+	console.debug("JMAP Email/query", JSON.stringify(describeEmailQueryShape(args, !!page)));
+	if (page) {
+		const { ids, total } = await pageEmailQuery(ctx, args, page);
+		return {
+			accountId: ctx.accountId,
+			queryState: await getEmailState(ctx),
+			canCalculateChanges: true,
+			position: page.position,
+			ids,
+			...(total !== undefined ? { total } : {}),
+		};
+	}
+
+	const { ordered } = await runEmailQuery(ctx, args);
+	const limit = queryLimit(args.limit);
+	let position = Number(args.position ?? 0);
 	if (args.anchor) {
 		const index = ordered.indexOf(String(args.anchor));
 		if (index < 0) return { type: "anchorNotFound" };
 		position = index + Number(args.anchorOffset ?? 0);
 	}
 	if (position < 0) position = Math.max(ordered.length + position, 0);
-	const page = ordered.slice(position, position + limit);
+	const slice = ordered.slice(position, position + limit);
 
 	return {
 		accountId: ctx.accountId,
 		queryState: await getEmailState(ctx),
-		canCalculateChanges: false,
+		canCalculateChanges: true,
 		position,
-		ids: page,
+		ids: slice,
 		...(args.calculateTotal ? { total: ordered.length } : {}),
 	};
 };
 
-export const emailChanges: JmapMethodHandler = async () => {
-	return { type: "cannotCalculateChanges", description: "Email change history is not kept; run Email/query again." };
+/**
+ * The email log rows since a state, cut to `maxChanges` distinct keys, or
+ * null when the state is not one the log can answer from (RFC 8620 §5.2).
+ */
+async function emailChangeWindow(ctx: JmapContext, args: Record<string, unknown>, keyOf: (row: { objectId: string; threadKey: string | null }) => string) {
+	const maxChanges = parseMaxChanges(args.maxChanges);
+	const history = await locateHistory(ctx, args.sinceState);
+	if (history.status === "unknown") return null;
+	if (history.status === "current") return { rows: [], since: history.seq, newSeq: history.seq, hasMore: false };
+	const { ids } = await scope(ctx);
+	let rows = await loadChangeRows(ctx, ids, history.since, history.current, "email");
+	let truncated = false;
+	if (exceedsFetchLimit(rows)) {
+		rows = rows.slice(0, -1);
+		truncated = true;
+	}
+	const window = takeChangeWindow(rows, keyOf, maxChanges, truncated ? rows[rows.length - 1].seq : history.current);
+	return { ...window, since: history.since, hasMore: window.hasMore || truncated };
+}
+
+const CANNOT_CALCULATE = { type: "cannotCalculateChanges", description: "That state is older than the retained change history; run Email/query again." };
+
+export const emailChanges: JmapMethodHandler = async (ctx, args) => {
+	const window = await emailChangeWindow(ctx, args, (row) => row.objectId);
+	if (!window) return CANNOT_CALCULATE;
+	return {
+		accountId: ctx.accountId,
+		oldState: formatSeqState(window.since),
+		newState: formatSeqState(window.newSeq),
+		hasMoreChanges: window.hasMore,
+		...classifyChanges(window.rows),
+	};
 };
 
-export const emailQueryChanges: JmapMethodHandler = async () => {
-	return { type: "cannotCalculateChanges" };
+/**
+ * Email/queryChanges (RFC 8620 §5.6): every id that changed is reported as
+ * removed and, when it still matches, added back at its current index. With
+ * collapseThreads a new message can displace its thread's previous
+ * representative without that message changing, so changes widen to whole
+ * threads first.
+ */
+export const emailQueryChanges: JmapMethodHandler = async (ctx, args) => {
+	const maxChanges = parseMaxChanges(args.maxChanges);
+	const history = await locateHistory(ctx, args.sinceQueryState);
+	if (history.status === "unknown") return CANNOT_CALCULATE;
+	const { ordered, collapse, condition, accessibleIds } = await runEmailQuery(ctx, args);
+	// The result list and the change rows are separate reads. If the log moved
+	// between them the two do not describe the same moment, so rather than hand
+	// out indexes that may already be stale the client is asked to query again.
+	const current = history.status === "current" ? history.seq : history.current;
+	if ((await currentSeq(ctx)) !== current) return CANNOT_CALCULATE;
+	const total = args.calculateTotal ? { total: ordered.length } : {};
+	if (history.status === "current") {
+		return { accountId: ctx.accountId, oldQueryState: formatSeqState(current), newQueryState: formatSeqState(current), removed: [], added: [], ...total };
+	}
+	const rows = await loadChangeRows(ctx, accessibleIds, history.since, current, "email");
+	if (exceedsFetchLimit(rows)) return { type: "tooManyChanges" };
+	const changed = new Set(rows.map((row) => row.objectId));
+	if (collapse) {
+		const members = await loadThreadMembers(ctx, condition, Array.from(new Set(rows.map((row) => row.threadKey ?? row.objectId))));
+		for (const ids of members.values()) for (const id of ids) changed.add(id);
+	}
+	// upToId only trims `added`: `removed` stays complete, so the bound is safe
+	// whether or not the sort and filter are immutable (RFC 8620 §5.6).
+	const { removed, added } = diffQueryResults(changed, ordered, typeof args.upToId === "string" ? args.upToId : null);
+	if (maxChanges !== null && removed.length + added.length > maxChanges) return { type: "tooManyChanges" };
+	return {
+		accountId: ctx.accountId,
+		oldQueryState: formatSeqState(history.since),
+		newQueryState: formatSeqState(history.current),
+		removed,
+		added,
+		...total,
+	};
 };
 
 /** Where a patched `mailboxIds` puts the message: exactly one JMAP mailbox is supported. */
@@ -204,11 +352,12 @@ function keywordsFromPatch(patch: Record<string, unknown>): { read?: boolean; st
 async function createDraft(ctx: JmapContext, value: Record<string, unknown>, accessible: Set<string>) {
 	const target = resolveDraftsMailbox(value.mailboxIds, accessible);
 	if ("error" in target) return target;
+	const mailbox = await findJmapMailbox(ctx, target.mailboxId);
+	if (!mailbox) return { error: { type: "invalidProperties", properties: ["mailboxIds"], description: "Unknown mailbox" } };
 	const from = (value.from as EmailAddressObject[] | undefined)?.[0]?.email;
-	if (!from) return { error: { type: "invalidProperties", properties: ["from"] } };
 	let sender: { fromAddr: string; mailboxId: string };
 	try {
-		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from, mailboxId: target.mailboxId });
+		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: resolveDraftSender(from, mailbox), mailboxId: target.mailboxId });
 	} catch (error) {
 		return { error: { type: "forbidden", description: error instanceof Error ? error.message : "Cannot send from that address" } };
 	}
@@ -325,7 +474,7 @@ export const emailSet: JmapMethodHandler = async (ctx, args) => {
 		destroyed.push(id);
 	}
 
-	return { accountId: ctx.accountId, oldState, newState: await getEmailState(ctx), created, updated, destroyed, notCreated, notUpdated, notDestroyed };
+	return { accountId: ctx.accountId, oldState, newState: await refreshEmailState(ctx), created, updated, destroyed, notCreated, notUpdated, notDestroyed };
 };
 
 /**
@@ -335,10 +484,15 @@ export const emailSet: JmapMethodHandler = async (ctx, args) => {
  * bytes are kept verbatim under `drafts/` and the parsed headers fill the
  * columns the rest of Mailflare reads, including `providerMessageId`, which is
  * what lets a client find its own draft again with a Message-ID header filter.
+ * A message without a From header is filed under the mailbox's own address
+ * rather than rejected: the sender is only settled at submission, so clients
+ * routinely leave it out.
  */
 async function importEmail(ctx: JmapContext, value: Record<string, unknown>, writable: Set<string>): Promise<{ id: string } | { error: JmapSetError }> {
 	const target = resolveDraftsMailbox(value.mailboxIds, writable);
 	if ("error" in target) return target;
+	const mailbox = await findJmapMailbox(ctx, target.mailboxId);
+	if (!mailbox) return { error: { type: "invalidProperties", properties: ["mailboxIds"], description: "Unknown mailbox" } };
 
 	const blob = typeof value.blobId === "string" ? decodeBlobId(value.blobId) : null;
 	if (!blob || blob.kind !== "up") return { error: { type: "blobNotFound", description: "blobId must name an upload from this account" } };
@@ -353,11 +507,10 @@ async function importEmail(ctx: JmapContext, value: Record<string, unknown>, wri
 	} catch (error) {
 		return { error: { type: "invalidEmail", description: error instanceof Error ? error.message : "The blob is not a MIME message" } };
 	}
-	if (!parsed.fromAddr) return { error: { type: "invalidEmail", description: "The message has no From header" } };
 
 	let sender: { fromAddr: string; mailboxId: string };
 	try {
-		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: parsed.fromAddr, mailboxId: target.mailboxId });
+		sender = await getAuthorizedSenderAddress(ctx.env, { userId: ctx.auth.userId, from: resolveDraftSender(parsed.fromAddr, mailbox), mailboxId: target.mailboxId });
 	} catch (error) {
 		return { error: { type: "forbidden", description: error instanceof Error ? error.message : "Cannot send from that address" } };
 	}
@@ -438,7 +591,7 @@ export const emailImport: JmapMethodHandler = async (ctx, args) => {
 		created[creationId] = { id: object.id, blobId: object.blobId, threadId: object.threadId, size: object.size };
 	}
 
-	return { accountId: ctx.accountId, oldState, newState: await getEmailState(ctx), created, notCreated };
+	return { accountId: ctx.accountId, oldState, newState: await refreshEmailState(ctx), created, notCreated };
 };
 
 export const emailUnsupported = (method: string): JmapMethodHandler => async () => ({ type: "unknownMethod", description: `${method} is not supported` });
@@ -464,7 +617,20 @@ export const threadGet: JmapMethodHandler = async (ctx, args) => {
 	};
 };
 
-export const threadChanges: JmapMethodHandler = async () => ({ type: "cannotCalculateChanges" });
+export const threadChanges: JmapMethodHandler = async (ctx, args) => {
+	const window = await emailChangeWindow(ctx, args, (row) => row.threadKey ?? row.objectId);
+	if (!window) return CANNOT_CALCULATE;
+	const { condition } = await scope(ctx);
+	const keys = Array.from(new Set(window.rows.map((row) => row.threadKey ?? row.objectId)));
+	const members = await loadThreadMembers(ctx, condition, keys);
+	return {
+		accountId: ctx.accountId,
+		oldState: formatSeqState(window.since),
+		newState: formatSeqState(window.newSeq),
+		hasMoreChanges: window.hasMore,
+		...classifyThreadChanges(window.rows, members),
+	};
+};
 
 /** SearchSnippet/get: the subject and a body excerpt around the first match, with <mark> tags. */
 export const searchSnippetGet: JmapMethodHandler = async (ctx, args) => {

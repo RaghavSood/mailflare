@@ -159,7 +159,7 @@ function EnrollDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
 				if (!next) reset();
 			}}
 		>
-			<DialogContent className="max-h-[calc(100vh-4rem)] overflow-y-auto sm:max-w-[480px]">
+			<DialogContent className="sm:max-w-[480px]">
 				{step === "password" && (
 					<form onSubmit={start} className="space-y-4">
 						<DialogHeader>
@@ -233,7 +233,7 @@ function DisableDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCh
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-h-[calc(100vh-4rem)] overflow-y-auto sm:max-w-[480px]">
+			<DialogContent className="sm:max-w-[480px]">
 				<form onSubmit={submit} className="space-y-4">
 					<DialogHeader>
 						<DialogTitle>Turn off two-factor authentication</DialogTitle>
@@ -284,7 +284,7 @@ function RecoveryCodesDialog({ open, onOpenChange, onDone }: { open: boolean; on
 				if (!next) setCodes(null);
 			}}
 		>
-			<DialogContent className="max-h-[calc(100vh-4rem)] overflow-y-auto sm:max-w-[480px]">
+			<DialogContent className="sm:max-w-[480px]">
 				{codes ? (
 					<div className="space-y-4">
 						<DialogHeader>

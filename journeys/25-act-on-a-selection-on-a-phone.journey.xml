@@ -1,0 +1,30 @@
+<journey name="Act on selected conversations from the list on a phone">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with three newly delivered conversations (none snoozed) at the top of the list, and a folder named "Journey receipts" exists for the inbox's mailbox.
+		With conversations selected, the list toolbar must fit the phone's screen: every action in it on screen, large enough to tap and not covered, with the less used ones in a "More actions" panel. Snooze and Move to act on all the selected conversations (#47).
+	</description>
+	<actions>
+		<action>Tap the round picture with the sender's initials at the left of the first conversation in the inbox list</action>
+		<action>Tap the round picture with the sender's initials at the left of the second conversation in the inbox list</action>
+		<action>Verify that both conversations show a check mark instead of their picture, the toolbar at the top reads "2 selected", and every button in the toolbar (select all, Archive, Delete, Snooze, Move to and More actions) is entirely on screen, at least 44 pixels wide and tall, and not covered by anything</action>
+		<action>Tap the "More actions" button (three dots) at the right of the toolbar</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Report spam", "Mark as read" and "Mark as unread", with nothing covering them</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the panel is gone, the inbox list is still shown and both conversations are still selected</action>
+		<action>Tap the "Snooze" button (clock) in the toolbar</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Later today", "Tomorrow", "This weekend" and "Next week"</action>
+		<action>Tap "Next week" in that panel</action>
+		<action>Verify that the inbox list is shown with a message starting "Snoozed until", and that neither selected conversation is in the list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Snoozed" in the drawer</action>
+		<action>Verify that both snoozed conversations are listed in Snoozed</action>
+		<action>Tap the menu button at the top left of the screen and tap "Inbox" in the drawer</action>
+		<action>Tap the round picture with the sender's initials at the left of the first conversation in the inbox list</action>
+		<action>Verify that the toolbar at the top reads "1 selected" and its "Move to" button (folder with an arrow) is on screen and not covered</action>
+		<action>Tap the "Move to" button in the toolbar</action>
+		<action>Verify that a panel slides up from the bottom of the screen listing "Inbox", "Archive", "Spam", "Trash" and "Journey receipts"</action>
+		<action>Tap "Journey receipts" in that panel</action>
+		<action>Verify that the inbox list is shown with a message ending "moved to Journey receipts.", and that the conversation is no longer in the list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Journey receipts" in the drawer</action>
+		<action>Verify that the moved conversation is listed in Journey receipts</action>
+	</actions>
+</journey>

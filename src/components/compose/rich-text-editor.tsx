@@ -144,7 +144,7 @@ export function RichTextEditor({
 					onPaste={onPaste}
 					onKeyDown={onKeyDown}
 					className={cn(
-						"email-body max-w-none px-4 py-3 text-sm text-neutral-900 outline-none",
+						"email-body max-w-none px-4 py-3 text-sm text-neutral-900 outline-none max-md:text-base",
 						"min-h-32 empty:before:pointer-events-none empty:before:text-neutral-400 empty:before:content-[attr(data-placeholder)]",
 						disabled && "cursor-not-allowed opacity-60",
 					)}
@@ -169,7 +169,7 @@ export function RichTextEditor({
 					</div>
 				)}
 			</div>
-			<div className="relative flex items-center gap-0.5 border-t border-neutral-100 px-4 py-3">
+			<div className="relative flex items-center gap-0.5 border-t border-neutral-100 px-4 py-3 max-sm:flex-wrap max-sm:gap-y-1 max-sm:px-3">
 				{toolbarStart}
 				{COMMANDS.map((item) => (
 					<Tooltip key={item.command} label={item.label}>

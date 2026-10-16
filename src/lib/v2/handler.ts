@@ -2,11 +2,17 @@ import { and, eq, inArray, like, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { contacts } from "@/db/schema";
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
-import { getSessionTokenFromRequestHeaders, getUserFromSession } from "@/lib/auth/session";
+import { getSessionIdFromToken, getSessionTokenFromRequestHeaders, getUserFromSession } from "@/lib/auth/session";
 import type { SessionUser } from "@/lib/auth/types";
+import { getCachedBranding } from "@/lib/branding/service";
+import type { Branding } from "@/lib/branding/types";
 import type { AttachmentContent } from "@/lib/email/attachment-types";
 import { getMessageHeaderDetailsForUser } from "@/lib/email/message-headers";
 import { MessageActionError } from "@/lib/messages/actions";
+import { isPushSubscriptionRegistered, removePushSubscription, savePushSubscription } from "@/lib/push/delivery";
+import { getPushConfig, parsePushSubscription } from "@/lib/push/push-utils";
+import { vapidKeyId } from "@/lib/push/vapid-utils";
+import { historyHeaders } from "./handler-utils";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
 import { UI_PREFERENCE_COOKIE } from "./preference";
@@ -15,6 +21,7 @@ import type { V2Context, V2Mailbox, V2Theme, V2ViewKey } from "./types";
 import { loadFolder, loadMailboxes } from "./data/context";
 import {
 	createReplyDraft,
+	discardComposerDraft,
 	discardDraft,
 	emptyDraft,
 	loadDraft,
@@ -23,12 +30,12 @@ import {
 	sendCompose,
 	type ComposeInput,
 } from "./data/compose";
-import { parseFromValue } from "./data/compose-utils";
+import { DraftGoneError, DraftSendingError, parseFromValue, recipientProblem } from "./data/compose-utils";
 import { loadThread, markUnreadFrom, resolveActionTargets, restoreMessages, runAction, setConversationStar, setSnooze } from "./data/thread";
 import { parseUndoEntries, type UndoEntry } from "./data/thread-utils";
 import { resolveSnoozeTime } from "./data/time-utils";
 import { defaultSender, navStateFor, readCookie, renderComposePage, renderRoute, timeZoneOf, withSenders, writeScope } from "./pages";
-import { renderNav, renderToast } from "./render/layout";
+import { renderNav, renderToast, SERVICE_WORKER_URL } from "./render/layout";
 import { renderComposer, renderDock } from "./render/compose";
 import { formatFullDate } from "./render/format";
 import { renderDetails, renderMessageBody } from "./render/thread";
@@ -121,7 +128,7 @@ async function loadIdentity(env: CloudflareEnv, request: Request): Promise<{ use
 	return identity;
 }
 
-function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, mailboxes: V2Mailbox[], url: URL): V2Context {
+function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, mailboxes: V2Mailbox[], url: URL, branding: Branding): V2Context {
 	const selected = readCookie(request, "mf_mb");
 	const selectedMailboxId = selected && mailboxes.some((mailbox) => mailbox.id === selected) ? selected : null;
 	const theme = readCookie(request, "mf_theme");
@@ -136,6 +143,8 @@ function buildContext(env: CloudflareEnv, request: Request, user: SessionUser, m
 		theme: theme === "light" || theme === "dark" ? theme : "system",
 		shortcutsEnabled: user.keyboardShortcutsEnabled !== false,
 		htmx: request.headers.get("hx-request") === "true",
+		vapidPublicKey: getPushConfig(env)?.publicKey ?? null,
+		branding,
 	};
 }
 
@@ -156,12 +165,18 @@ function at(ctx: V2Context, path: string): V2Context {
 	return { ...ctx, url: new URL(safeReturnPath(path), ctx.url.origin) };
 }
 
-async function respondWithPage(ctx: V2Context, path: string, options: { toast?: Html | null; push?: boolean } = {}): Promise<Response> {
+/**
+ * Answers an action with the page at `path`. Actions are POSTs to /v2/act and
+ * friends, so the address only moves when asked: `push` when the view
+ * changes, `replace` when the page the request came from (`current`) no
+ * longer exists, as after sending a draft.
+ */
+async function respondWithPage(ctx: V2Context, path: string, options: { toast?: Html | null; push?: boolean; replace?: boolean; current?: string | null } = {}): Promise<Response> {
 	const target = safeReturnPath(path);
 	if (!ctx.htmx) return redirect(target);
 	const page = await renderRoute(at(ctx, target), { toast: options.toast });
-	// Actions are POSTs to /v2/act and friends; only push a URL when the view changes.
-	return htmlResponse(page.body, { status: page.status, headers: { "HX-Push-Url": options.push ? target : "false" } });
+	const mode = options.push ? "push" : options.replace ? "replace" : "none";
+	return htmlResponse(page.body, { status: page.status, headers: historyHeaders(mode, target, options.current ?? null) });
 }
 
 function toastWithUndo(message: string, undo: { kind: "restore"; entries: UndoEntry[] } | { kind: "unsnooze"; ids: string[] } | null, returnTo: string): Html {
@@ -206,15 +221,17 @@ async function handleAct(ctx: V2Context, form: FormData): Promise<Response> {
 	const quiet = form.get("quiet") === "1";
 	const partial = form.get("partial") === "1" && !conversation;
 	const respond = async (path: string, options: { toast?: Html | null; push?: boolean; failed?: boolean } = {}): Promise<Response> => {
-		if (quiet) return new Response(null, { status: options.failed ? 422 : 204, headers: securityHeaders(new Headers()) });
+		// The page shows this as a toast through textContent.
+		const failure = () => new Response(
+			options.toast
+				? String(options.toast).replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim()
+				: "Something went wrong.",
+			{ status: 422, headers: securityHeaders(new Headers({ "Content-Type": "text/plain; charset=utf-8" })) },
+		);
+		// A replayed offline action is quiet too, and reports why it was refused.
+		if (quiet) return options.failed ? failure() : new Response(null, { status: 204, headers: securityHeaders(new Headers()) });
 		if (partial) {
-			if (options.failed) {
-				// The page shows this as a toast through textContent.
-				const text = options.toast
-					? String(options.toast).replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim()
-					: "Something went wrong.";
-				return new Response(text, { status: 422, headers: securityHeaders(new Headers({ "Content-Type": "text/plain; charset=utf-8" })) });
-			}
+			if (options.failed) return failure();
 			const nav = await navStateFor(ctx, { view, folderId });
 			return htmlResponse(html`${renderNav(ctx, nav)}${renderToast(options.toast ?? null)}`, { headers: { "HX-Push-Url": "false" } });
 		}
@@ -309,8 +326,10 @@ function composeInputFrom(form: FormData, ctx: V2Context): ComposeInput | { erro
 	if (!from) return { error: "Choose who the message is from." };
 	if (!ctx.mailboxes.some((mailbox) => mailbox.id === from.mailboxId && mailbox.canSend)) return { error: "You can't send from that mailbox." };
 	const draftId = String(form.get("draftId") ?? "");
+	const composeKey = String(form.get("composeKey") ?? "");
 	return {
 		draftId: ID.test(draftId) ? draftId : null,
+		composeKey: ID.test(composeKey) ? composeKey : null,
 		mailboxId: from.mailboxId,
 		from: from.address,
 		to: String(form.get("to") ?? ""),
@@ -324,10 +343,11 @@ function composeInputFrom(form: FormData, ctx: V2Context): ComposeInput | { erro
 	};
 }
 
-async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
+async function handleSend(ctx: V2Context, form: FormData, current: string | null): Promise<Response> {
 	const input = composeInputFrom(form, ctx);
 	if ("error" in input) return htmlResponse(input.error, { status: 422 });
-	if (!input.to.trim()) return htmlResponse("Add at least one recipient.", { status: 422 });
+	const problem = recipientProblem(input);
+	if (problem) return htmlResponse(problem, { status: 422 });
 	const uploads: AttachmentContent[] = [];
 	for (const value of form.getAll("attachments")) {
 		if (!(value instanceof File) || value.size === 0) continue;
@@ -336,10 +356,15 @@ async function handleSend(ctx: V2Context, form: FormData): Promise<Response> {
 	try {
 		await sendCompose(ctx.env, ctx.user, { ...input, uploads });
 	} catch (error) {
+		// Already sent (a replay whose first response was lost) or discarded: never send it again.
+		if (error instanceof DraftGoneError) return htmlResponse(error.message, { status: 410 });
+		// Another request (the original this one replays) is sending it now.
+		if (error instanceof DraftSendingError) return htmlResponse(error.message, { status: 409 });
 		return htmlResponse(error instanceof Error ? error.message : "Sending failed.", { status: 422 });
 	}
 	const returnTo = safeReturnPath(String(form.get("return") ?? ""));
-	return respondWithPage(ctx, returnTo, { toast: html`<span>Message sent.</span>` });
+	// The composer's page (a draft, /v2/compose) is done with: the page shown takes its address.
+	return respondWithPage(ctx, returnTo, { toast: html`<span>Message sent.</span>`, replace: true, current });
 }
 
 async function handleContacts(ctx: V2Context): Promise<Response> {
@@ -358,6 +383,59 @@ async function findMessage(ctx: V2Context, messageId: string) {
 	if (!ID.test(messageId)) return null;
 	const thread = await loadThread(ctx.env, { messageId, view: "trash", scopeMailboxIds: ctx.scopeMailboxIds });
 	return thread?.messages.find((message) => message.id === messageId) ?? null;
+}
+
+/** Stored endpoints are normalised by parsePushSubscription; match the same form. */
+function normalizeEndpoint(value: unknown): string | null {
+	if (typeof value !== "string" || !value) return null;
+	try {
+		return new URL(value).href;
+	} catch {
+		return value;
+	}
+}
+
+/**
+ * POST /v2/push/subscribe, /v2/push/unsubscribe and /v2/push/check take the
+ * browser's PushSubscription JSON (the last two need only `endpoint`).
+ * Subscribe binds the endpoint to the signed-in user and session and to the
+ * current VAPID key; check answers whether the server still pushes to it, which
+ * after a sign-out it does not.
+ */
+async function handlePush(ctx: V2Context, name: string): Promise<Response> {
+	if (name !== "push/subscribe" && name !== "push/unsubscribe" && name !== "push/check") return htmlResponse("Not found", { status: 404 });
+	const text = await ctx.request.text();
+	if (text.length > 8192) return jsonResponse({ error: "Subscription is too large." }, 413);
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return jsonResponse({ error: "Expected a PushSubscription as JSON." }, 400);
+	}
+	const endpoint = normalizeEndpoint((body as { endpoint?: unknown } | null)?.endpoint);
+	if (name !== "push/subscribe") {
+		if (!endpoint) return jsonResponse({ error: "Missing endpoint." }, 400);
+		if (name === "push/check") return jsonResponse({ subscribed: !!ctx.vapidPublicKey && await isPushSubscriptionRegistered(ctx.env, ctx.user.id, endpoint) });
+		await removePushSubscription(ctx.env, ctx.user.id, endpoint);
+		return jsonResponse({ ok: true });
+	}
+	if (!ctx.vapidPublicKey) return jsonResponse({ error: "Push notifications are not configured on this server." }, 409);
+	// A page loaded before the key changed subscribes with the old one; the push service would refuse every message.
+	const subscribedWith = (body as { applicationServerKey?: unknown }).applicationServerKey;
+	if (typeof subscribedWith === "string" && subscribedWith.replace(/=+$/, "") !== ctx.vapidPublicKey) {
+		return jsonResponse({ error: "The server's notification key has changed. Reload the page and turn notifications on again." }, 409);
+	}
+	const subscription = parsePushSubscription(body);
+	if (!subscription) return jsonResponse({ error: "That push subscription is not valid." }, 422);
+	const sessionId = await getSessionIdFromToken(ctx.env, getSessionTokenFromRequestHeaders(ctx.request));
+	if (!sessionId) return jsonResponse({ error: "Your session has ended. Sign in again." }, 401);
+	await savePushSubscription(
+		ctx.env,
+		{ userId: ctx.user.id, sessionId, vapidKeyId: await vapidKeyId(ctx.vapidPublicKey) },
+		subscription,
+		ctx.request.headers.get("user-agent"),
+	);
+	return jsonResponse({ ok: true });
 }
 
 /**
@@ -393,11 +471,16 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	if (method === "POST" && !isSameOrigin(request, url)) return htmlResponse("Forbidden", { status: 403 });
 	const identity = await loadIdentity(env, request);
 	if (!identity) {
-		if (method === "GET") return redirect(`/login`);
+		// Opening a v2 page (an installed app's start URL included) should come
+		// back to v2 after signing in, which the login redirect reads from mf_ui.
+		if (method === "GET") return redirect(`/login`, route.kind === "view" || route.kind === "home" ? [cookie(UI_PREFERENCE_COOKIE, "v2", url)] : []);
 		return htmlResponse("Your session has ended. Sign in again.", { status: 401 });
 	}
 	const { user } = identity;
-	const ctx = buildContext(env, request, user, identity.mailboxes, url);
+	// Actions queued offline name the user who queued them; never apply them as anyone else.
+	const queuedBy = request.headers.get("x-mailflare-user");
+	if (method === "POST" && queuedBy && queuedBy !== user.id) return htmlResponse("This change was made while signed in as someone else.", { status: 409 });
+	const ctx = buildContext(env, request, user, identity.mailboxes, url, await getCachedBranding(env));
 
 	if (route.kind === "home") return redirect("/v2/inbox");
 	if (route.kind === "notFound") {
@@ -442,9 +525,12 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		if (name === "body" && id) {
 			const message = await findMessage(ctx, id);
 			if (!message) return htmlResponse("Not found", { status: 404 });
-			return htmlResponse(renderMessageBody(message));
+			// The service worker keeps opened bodies for offline reading under this user.
+			return htmlResponse(renderMessageBody(message), { headers: { "X-Mailflare-User": user.id } });
 		}
 		if (name === "contacts") return handleContacts(ctx);
+		// For pages without data-vapid-key (classic settings, the service worker re-subscribing).
+		if (name === "push" && id === "key") return jsonResponse({ publicKey: ctx.vapidPublicKey, serviceWorker: SERVICE_WORKER_URL });
 		if (name === "poll") {
 			const page = await renderRoute(at(ctx, safeReturnPath(url.searchParams.get("path"))));
 			return htmlResponse(page.body);
@@ -453,6 +539,7 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	}
 
 	if (method !== "POST") return htmlResponse("Method not allowed", { status: 405 });
+	if (route.kind === "action" && route.name.startsWith("push/")) return handlePush(ctx, route.name);
 	const form = await request.formData();
 	const name = route.kind === "action" ? route.name : "";
 	switch (name) {
@@ -500,7 +587,9 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		}
 		case "draft/discard": {
 			const draftId = String(form.get("draftId") ?? "");
+			const composeKey = String(form.get("composeKey") ?? "");
 			if (ID.test(draftId)) await discardDraft(env, user, draftId);
+			if (ID.test(composeKey)) await discardComposerDraft(env, user, composeKey);
 			if (ctx.htmx || request.headers.get("accept")?.includes("application/json")) return jsonResponse({ ok: true });
 			return redirect(safeReturnPath(String(form.get("return") ?? ""), "/v2/drafts"));
 		}
@@ -511,7 +600,7 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 			return jsonResponse({ ok: removed });
 		}
 		case "send":
-			return handleSend(ctx, form);
+			return handleSend(ctx, form, currentPagePath(request, url));
 		case "prefs": {
 			const cookies: string[] = [];
 			const theme = String(form.get("theme") ?? "");

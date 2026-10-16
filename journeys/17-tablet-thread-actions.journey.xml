@@ -1,0 +1,15 @@
+<journey name="Use a conversation's menu and details at once on a tablet">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in on a tablet-sized screen (900 to 1199 CSS pixels wide), with at least one conversation in the list.
+		On a tablet a conversation opens beside the list of conversations, and its three-dot menu opens as a dropdown rather than a bottom sheet.
+		Its menu and details work from the moment the conversation is shown, not only a moment later.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list and, as quickly as possible after it, tap the three-dot button to the right of the message date</action>
+		<action>Verify that the conversation is shown beside the list of conversations, with a menu open next to the button listing "Reply", "Reply all", "Forward" and "Mark unread from here"</action>
+		<action>Press the Android Back button once</action>
+		<action>Verify that the inbox list is shown</action>
+		<action>Tap the first conversation in the inbox list and, as quickly as possible after it, tap the small down-arrow next to the recipients under the sender's name</action>
+		<action>Verify that the conversation is shown beside the list of conversations, with a panel showing "from:", "to:", "date:" and "subject:" details</action>
+	</actions>
+</journey>

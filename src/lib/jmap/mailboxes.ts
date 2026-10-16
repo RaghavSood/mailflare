@@ -3,7 +3,9 @@ import { folders, messages } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { JmapError } from "./errors";
 import { decodeMailboxRef, encodeMailboxRef, roleToStatus, SYSTEM_ROLES } from "./ids";
-import { getMailboxState } from "./state";
+import { exceedsFetchLimit, loadChangeRows, locateHistory } from "./changes";
+import { classifyChanges, digestIds, formatMailboxState, parseMailboxState, parseMaxChanges, takeChangeWindow } from "./changes-utils";
+import { getMailboxState, refreshMailboxState } from "./state";
 import type { AccessibleMailbox, JmapContext, JmapMethodHandler, SystemRole } from "./types";
 import { listFoldersByMailbox, listJmapMailboxes } from "./access";
 
@@ -176,8 +178,70 @@ export const mailboxQuery: JmapMethodHandler = async (ctx, args) => {
 	};
 };
 
-export const mailboxChanges: JmapMethodHandler = async () => {
-	return { type: "cannotCalculateChanges", description: "Mailbox change history is not kept; run Mailbox/get again." };
+const COUNT_PROPERTIES = ["totalEmails", "unreadEmails", "totalThreads", "unreadThreads"];
+
+/**
+ * Mailbox/changes (RFC 8621 §2.2). Folder rows in the log map straight onto
+ * folder Mailboxes. Message rows only move counts, so every Mailbox under an
+ * affected Mailflare mailbox is reported updated; when nothing but counts
+ * changed, `updatedProperties` says so and clients refetch only those.
+ */
+export const mailboxChanges: JmapMethodHandler = async (ctx, args) => {
+	const cannot = { type: "cannotCalculateChanges", description: "That state is older than the retained change history; run Mailbox/get again." };
+	const parsed = parseMailboxState(args.sinceState);
+	if (!parsed) return cannot;
+	const accessible = await listJmapMailboxes(ctx);
+	const ids = accessible.map((row) => row.id);
+	if (parsed.digest !== digestIds(ids)) return cannot;
+	const history = await locateHistory(ctx, String(parsed.seq));
+	if (history.status === "unknown") return cannot;
+	const oldState = formatMailboxState(parsed.seq, ids);
+	if (history.status === "current") {
+		return { accountId: ctx.accountId, oldState, newState: oldState, hasMoreChanges: false, updatedProperties: COUNT_PROPERTIES, created: [], updated: [], destroyed: [] };
+	}
+	const maxChanges = parseMaxChanges(args.maxChanges);
+	let rows = await loadChangeRows(ctx, ids, history.since, history.current, null);
+	let truncated = false;
+	if (exceedsFetchLimit(rows)) {
+		rows = rows.slice(0, -1);
+		truncated = true;
+	}
+	// Message rows count once per Mailflare mailbox, since that is what they expand to.
+	const window = takeChangeWindow(rows, (row) => (row.type === "mailbox" ? `f:${row.objectId}` : `m:${row.mailboxId}`), maxChanges, truncated ? rows[rows.length - 1].seq : history.current);
+
+	// Rows are scoped by owner as well as mailbox, so a folder in a mailbox this key cannot see is dropped here.
+	const visible = window.rows.filter((row) => row.mailboxId && ids.includes(row.mailboxId));
+	const folderRows = visible.filter((row) => row.type === "mailbox");
+	const folderChanges = classifyChanges(folderRows);
+	const folderMailbox = new Map(folderRows.map((row) => [row.objectId, row.mailboxId]));
+	const folderRef = (folderId: string) => encodeMailboxRef({ kind: "folder", mailboxId: folderMailbox.get(folderId) ?? "", folderId });
+	const created = folderChanges.created.map(folderRef);
+	const destroyed = folderChanges.destroyed.map(folderRef);
+	const updated = new Set(folderChanges.updated.map(folderRef));
+	const countsOnly = folderChanges.updated.length === 0;
+
+	const touched = new Set(visible.filter((row) => row.type === "email").map((row) => row.mailboxId as string));
+	const foldersByMailbox = await listFoldersByMailbox(ctx, Array.from(touched));
+	const settled = new Set([...created, ...destroyed]);
+	for (const mailboxId of touched) {
+		const refs = [
+			encodeMailboxRef({ kind: "account", mailboxId }),
+			...SYSTEM_ROLES.map((role) => encodeMailboxRef({ kind: "role", mailboxId, role })),
+			...(foldersByMailbox.get(mailboxId) ?? []).map((folder) => encodeMailboxRef({ kind: "folder", mailboxId, folderId: folder.id })),
+		];
+		for (const ref of refs) if (!settled.has(ref)) updated.add(ref);
+	}
+
+	return {
+		accountId: ctx.accountId,
+		oldState,
+		newState: formatMailboxState(window.newSeq, ids),
+		hasMoreChanges: window.hasMore || truncated,
+		updatedProperties: countsOnly ? COUNT_PROPERTIES : null,
+		created,
+		updated: Array.from(updated),
+		destroyed,
+	};
 };
 
 /** Folders can be created, renamed and removed; system mailboxes cannot. */
@@ -269,7 +333,7 @@ export const mailboxSet: JmapMethodHandler = async (ctx, args) => {
 	return {
 		accountId: ctx.accountId,
 		oldState,
-		newState: await getMailboxState(ctx),
+		newState: await refreshMailboxState(ctx),
 		created,
 		updated,
 		destroyed,

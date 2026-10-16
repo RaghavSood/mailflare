@@ -1,0 +1,28 @@
+<journey name="Compose and send while offline, delivered exactly once on reconnect">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, and no message with the subject "Offline send journey" exists in Sent or Drafts.
+		A message sent offline goes to the outbox and is sent when the connection returns. It must arrive exactly once, however many times the outbox replays it, and must not leave a draft behind.
+	</description>
+	<actions>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings</action>
+		<action>Verify that the banner at the top of the inbox reads "Offline"</action>
+		<action>Tap the round compose button with the pencil icon at the bottom right of the screen</action>
+		<action>Verify that a "New message" composer is shown with "From", "To" and "Subject" fields, a message area and a "Send" button</action>
+		<action>Tap the "To" field and type "maya@acme.test", then tap the "Subject" field</action>
+		<action>Type "Offline send journey" into the "Subject" field</action>
+		<action>Tap the message area below the subject and type "Written and sent offline."</action>
+		<action>Verify that the "Send" button is visible on the screen and not covered by the keyboard; hide the keyboard with the Back button if it is covered</action>
+		<action>Tap the "Send" button</action>
+		<action>Verify that the composer closes, the inbox is shown, and a message saying the message will be sent when you're back online appears near the bottom of the screen</action>
+		<action>Verify that the banner at the top reads "Offline" followed by "1 change waiting"</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 15 seconds</action>
+		<action>Verify that the banner is gone</action>
+		<action>Pull the inbox list down from just below the toolbar to refresh it, and wait 5 seconds</action>
+		<action>Tap the menu button at the top left of the screen and tap "Sent" in the drawer</action>
+		<action>Verify that exactly one conversation with the subject "Offline send journey" is listed in Sent</action>
+		<action>Tap the menu button at the top left of the screen and tap "Drafts" in the drawer</action>
+		<action>Verify that no draft with the subject "Offline send journey" is listed in Drafts</action>
+	</actions>
+</journey>

@@ -1,0 +1,18 @@
+<journey name="Queue an action offline and apply it on reconnect">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, with at least two conversations in the list.
+		Actions taken offline go to an outbox and replay in order when the connection returns.
+	</description>
+	<actions>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it on</action>
+		<action>Close Quick Settings</action>
+		<action>Swipe the first conversation row from the right edge of the screen towards the left edge</action>
+		<action>Verify that the swiped row is no longer in the list and the banner at the top reads "Offline" followed by "1 change waiting"</action>
+		<action>Verify that no "Undo" button is shown</action>
+		<action>Swipe down from the very top edge of the screen twice to open Quick Settings, and tap "Airplane mode" to turn it off</action>
+		<action>Close Quick Settings and wait 15 seconds</action>
+		<action>Verify that the banner is gone and the swiped conversation is still not in the inbox list</action>
+		<action>Tap the menu button at the top left of the screen and tap "Trash" in the drawer</action>
+		<action>Verify that the conversation swiped while offline is listed in Trash</action>
+	</actions>
+</journey>

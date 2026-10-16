@@ -21,7 +21,7 @@ after(() => rmSync(outDir, { recursive: true, force: true }));
 await build({
 	stdin: {
 		contents: `
-			export { idSetToList, importFlags, parseReceivedAt, resolveDraftsMailbox } from "./src/lib/jmap/email-import-utils.ts";
+			export { idSetToList, importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox } from "./src/lib/jmap/email-import-utils.ts";
 			export { filterToSql } from "./src/lib/jmap/email-query.ts";
 			export { encodeMailboxRef } from "./src/lib/jmap/ids.ts";
 			import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
@@ -40,7 +40,7 @@ await build({
 	logLevel: "silent",
 });
 
-const { idSetToList, importFlags, parseReceivedAt, resolveDraftsMailbox, filterToSql, encodeMailboxRef, render } = await import(
+const { idSetToList, importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox, filterToSql, encodeMailboxRef, render } = await import(
 	pathToFileURL(join(outDir, "entry.mjs")).href
 );
 
@@ -100,6 +100,15 @@ test("anything but a Drafts mailbox is rejected as invalidProperties on mailboxI
 		assert.equal(result.error.type, "invalidProperties", name);
 		assert.deepEqual(result.error.properties, ["mailboxIds"], name);
 	}
+});
+
+test("a draft without a From header is filed under the mailbox's own address", () => {
+	const mailbox = { localPart: "botler", hostname: "example.com" };
+	assert.equal(resolveDraftSender(null, mailbox), "botler@example.com");
+	assert.equal(resolveDraftSender(undefined, mailbox), "botler@example.com");
+	assert.equal(resolveDraftSender("   ", mailbox), "botler@example.com");
+	// A client that does name a sender keeps it; authorization is checked afterwards.
+	assert.equal(resolveDraftSender('"Tricia" <me@example.com>', mailbox), '"Tricia" <me@example.com>');
 });
 
 test("a Message-ID header filter compares without angle brackets", () => {

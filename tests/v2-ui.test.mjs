@@ -18,13 +18,19 @@ await build({
 		contents: `
 			export { html, raw, escapeHtml } from "./src/lib/v2/html.ts";
 			export { parseV2Path, listHref, threadHref, v2ToClassic, classicToV2, safeReturnPath } from "./src/lib/v2/paths.ts";
+			export { historyHeaders } from "./src/lib/v2/handler-utils.ts";
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
 			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
-			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue } from "./src/lib/v2/data/compose-utils.ts";
+			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
 			export { homePathFor } from "./src/lib/v2/preference.ts";
+			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
+			export { renderComposer } from "./src/lib/v2/render/compose.ts";
+			export { renderDetails, renderThreadMain } from "./src/lib/v2/render/thread.ts";
+			export { renderListMain } from "./src/lib/v2/render/list.ts";
+			export { resolvePushControlState, shownPushControlState, pushKeyFailureState, describePushError, PUSH_OFFLINE_MESSAGE } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
 		sourcefile: "v2-test-entry.js",
@@ -81,6 +87,22 @@ test("post-action destinations stay inside /v2", () => {
 	for (const bad of ["https://evil.example/v2/", "//evil.example", "/inbox", "/v2", "/v2/\\evil", "/v2/x\r\nSet-Cookie: a=b", null, ""]) {
 		assert.equal(v2.safeReturnPath(bad), "/v2/inbox", String(bad));
 	}
+});
+
+test("a send moves the address off a composer page that no longer exists, and only then", () => {
+	// Sent from a draft opened from Drafts: the draft is gone, so the Drafts list takes its history entry.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/drafts", "/v2/drafts/msg_1"), { "HX-Replace-Url": "/v2/drafts" });
+	// /v2/compose (new, or ?draft=) answers with the Inbox.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox", "/v2/compose?draft=msg_1"), { "HX-Replace-Url": "/v2/inbox" });
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox", "/v2/compose"), { "HX-Replace-Url": "/v2/inbox" });
+	// The docked composer and an inline reply return to the page they were on: nothing to change.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox?page=2", "/v2/inbox?page=2"), { "HX-Push-Url": "false" });
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/inbox/msg_2", "/v2/inbox/msg_2"), { "HX-Push-Url": "false" });
+	// Without HX-Current-URL the page shown still names itself.
+	assert.deepEqual(v2.historyHeaders("replace", "/v2/drafts", null), { "HX-Replace-Url": "/v2/drafts" });
+	// Other actions keep their behaviour: push when the view changes, otherwise leave the address alone.
+	assert.deepEqual(v2.historyHeaders("push", "/v2/inbox", "/v2/inbox/msg_2"), { "HX-Push-Url": "/v2/inbox" });
+	assert.deepEqual(v2.historyHeaders("none", "/v2/inbox", "/v2/inbox/msg_2"), { "HX-Push-Url": "false" });
 });
 
 test("email HTML loses active tags before it reaches the sandboxed frame", () => {
@@ -238,4 +260,344 @@ test("view membership matches the conversation_views triggers", () => {
 	assert.equal(v2.memberInView({ ...base, starred: true, status: "spam" }, "starred", null, now), false);
 	assert.equal(v2.memberInView({ ...base, status: "archived" }, "all", null, now), true);
 	assert.equal(v2.memberInView({ ...base, status: "draft" }, "all", null, now), false);
+});
+
+test("v2 pages link the web app manifest and hand app.js the versioned service worker", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const out = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+
+	assert.match(out, /<link rel="manifest" href="\/manifest\.webmanifest">/);
+	assert.match(out, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/);
+	assert.match(out, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+	assert.match(out, /<meta name="apple-mobile-web-app-status-bar-style" content="[a-z-]+">/);
+	assert.equal(v2.SERVICE_WORKER_URL, `/sw.js?v=${v2.ASSET_VERSION}&htmx=${v2.HTMX_VERSION}`);
+	assert.ok(out.includes(`data-sw="/sw.js?v=${v2.ASSET_VERSION}&amp;htmx=${v2.HTMX_VERSION}"`), "body carries the worker URL");
+	assert.ok(out.includes(`/v2-assets/app.js?v=${v2.ASSET_VERSION}`));
+	assert.ok(out.includes(`/v2-assets/htmx.min.js?v=${v2.HTMX_VERSION}`));
+	// Offline support: the user its caches and outbox are keyed by, the shared module before app.js, and the banner.
+	assert.match(out, /<body [^>]*data-user="usr_1"/);
+	assert.ok(out.indexOf(`/v2-assets/offline.js?v=${v2.ASSET_VERSION}`) > 0 && out.indexOf(`/v2-assets/offline.js?v=${v2.ASSET_VERSION}`) < out.indexOf("/v2-assets/app.js"));
+	assert.match(out, /<div class="offline-banner" data-offline-banner role="status" aria-live="polite" hidden>/);
+
+	// app.js registers whatever the body names, scoped to the v2 interface.
+	const app = await readFile(join(root, "public/v2-assets/app.js"), "utf8");
+	assert.match(app, /navigator\.serviceWorker\.register\(url, \{ scope: "\/v2\/" \}\)/);
+	assert.match(app, /body\.dataset\.sw/);
+
+	// The manifest launches into v2 and ships the install icon sizes.
+	const manifest = JSON.parse(await readFile(join(root, "public/manifest.webmanifest"), "utf8"));
+	assert.equal(manifest.start_url, "/v2/inbox");
+	assert.equal(manifest.scope, "/v2/");
+	assert.equal(manifest.display, "standalone");
+	const sizes = manifest.icons.map((icon) => `${icon.sizes}:${icon.purpose}`);
+	assert.deepEqual(sizes.sort(), ["192x192:any", "512x512:any", "512x512:maskable"]);
+	for (const icon of manifest.icons) await readFile(join(root, "public", icon.src));
+});
+
+test("with a VAPID key the body carries it and the sidebar has the notifications toggle; without one, neither", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const base = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const key = "BIuNlFWwIuxLrm4ojdfE77tWjtlPL1m1ZSPim_3nmBbkip0zmTH6-h4xblviIyt9prcYBwhAEB5O_CgqMfLs-HM";
+	const on = String(v2.renderPage({ ...base, vapidPublicKey: key }, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.ok(on.includes(` data-vapid-key="${key}"`), "body carries the public key");
+	const toggle = /<button type="button" class="nav-item subtle push-toggle" data-push hidden>[\s\S]*?<\/button>/.exec(on)?.[0];
+	assert.ok(toggle, "sidebar footer renders the toggle, hidden until app.js reads the browser's state");
+	assert.match(toggle, /data-push-label>Notifications</);
+	assert.ok(on.indexOf("data-push") < on.indexOf('href="/settings/account"'), "toggle sits in the sidebar footer above Settings");
+
+	const off = String(v2.renderPage({ ...base, vapidPublicKey: null }, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.ok(!off.includes("data-vapid-key"));
+	assert.ok(!off.includes("data-push"));
+});
+
+test("the opt-in state: install first on iOS outside the app, blocked, off, on, and off again after a key change or a sign-out", () => {
+	const key = "BKEY";
+	const env = { publicKey: key, supported: true, ios: false, standalone: false, permission: "granted", subscribedKey: key, subscribed: true, registered: true };
+	assert.equal(v2.resolvePushControlState(env), "on");
+	assert.equal(v2.resolvePushControlState({ ...env, publicKey: null }), "unavailable");
+	assert.equal(v2.resolvePushControlState({ ...env, ios: true }), "install");
+	assert.equal(v2.resolvePushControlState({ ...env, ios: true, standalone: true }), "on");
+	assert.equal(v2.resolvePushControlState({ ...env, supported: false }), "unsupported");
+	assert.equal(v2.resolvePushControlState({ ...env, permission: "denied" }), "blocked");
+	assert.equal(v2.resolvePushControlState({ ...env, permission: "default" }), "off");
+	assert.equal(v2.resolvePushControlState({ ...env, subscribed: false, subscribedKey: null }), "off");
+	assert.equal(v2.resolvePushControlState({ ...env, subscribedKey: "OLDKEY" }), "off");
+	// After a sign-out the server has no row: the browser's leftover subscription is not "on".
+	assert.equal(v2.resolvePushControlState({ ...env, registered: false }), "off");
+	// The check could not be made (offline): trust the browser.
+	assert.equal(v2.resolvePushControlState({ ...env, registered: null }), "on");
+});
+
+test("offline, the classic push card says so instead of claiming push is not configured", () => {
+	// The key could not be loaded: offline (or a dropped connection) is not "unavailable".
+	assert.equal(v2.pushKeyFailureState(new TypeError("Failed to fetch"), true), "offline");
+	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), false), "offline");
+	assert.equal(v2.pushKeyFailureState(new Error("Could not check notifications"), true), "unavailable");
+	// Opened offline it does not sit on "Checking...".
+	assert.equal(v2.shownPushControlState("loading", false), "offline");
+	assert.equal(v2.shownPushControlState("loading", true), "loading");
+	assert.equal(v2.shownPushControlState("offline", true), "offline", "a failing connection the browser calls online");
+	assert.equal(v2.shownPushControlState("on", false), "on", "the known state stays visible offline");
+	assert.equal(v2.shownPushControlState("off", true), "off");
+	// Failures read as offline, never as the raw "Failed to fetch".
+	assert.equal(v2.describePushError(new TypeError("Failed to fetch"), true, "x"), v2.PUSH_OFFLINE_MESSAGE);
+	assert.equal(v2.describePushError(new Error("anything"), false, "x"), v2.PUSH_OFFLINE_MESSAGE);
+	assert.match(v2.describePushError(new DOMException("Registration failed - push service error", "AbortError"), true, "x"), /push service/);
+	assert.equal(v2.describePushError(new Error("This key is out of date."), true, "x"), "This key is out of date.");
+	assert.equal(v2.describePushError("nope", true, "Could not turn on notifications"), "Could not turn on notifications");
+	assert.match(v2.PUSH_OFFLINE_MESSAGE, /^You're offline/);
+});
+
+/** Runs public/sw.js against a fake ServiceWorkerGlobalScope and returns its listeners and spies. */
+async function loadServiceWorker({ windows = [] } = {}) {
+	const { readFile } = await import("node:fs/promises");
+	const { createContext, runInContext } = await import("node:vm");
+	const source = await readFile(join(root, "public/sw.js"), "utf8");
+	const offline = await readFile(join(root, "public/v2-assets/offline.js"), "utf8");
+	const listeners = {};
+	const shown = [];
+	const opened = [];
+	const self = {
+		location: new URL("https://mail.example.com/sw.js?v=3&htmx=2.0.11"),
+		addEventListener: (type, listener) => { listeners[type] = listener; },
+		registration: { showNotification: async (title, options) => { shown.push({ title, options }); } },
+		clients: {
+			matchAll: async () => windows,
+			openWindow: async (url) => { opened.push(url); },
+			claim: async () => {},
+		},
+	};
+	const context = createContext({ self, URL, Uint8Array, atob, JSON, console, caches: {}, fetch: async () => { throw new Error("offline"); } });
+	// The worker loads the shared offline module first.
+	context.importScripts = () => runInContext(offline, context);
+	runInContext(source, context);
+	async function dispatch(type, event) {
+		let pending;
+		listeners[type]({ ...event, waitUntil: (promise) => { pending = promise; } });
+		await pending;
+	}
+	return { listeners, shown, opened, dispatch };
+}
+
+test("service worker shows a notification for every push, titled by sender and tagged by message", async () => {
+	const sw = await loadServiceWorker();
+	await sw.dispatch("push", { data: { json: () => ({ messageId: "msg_42", from: "alice@example.org", fromName: "Alice", subject: "Lunch?" }) } });
+	await sw.dispatch("push", { data: { json: () => ({ messageId: "msg_43", from: "bob@example.org", fromName: null, subject: null }) } });
+	// A push that cannot be read still shows something, as userVisibleOnly requires.
+	await sw.dispatch("push", { data: { json: () => { throw new SyntaxError("bad"); } } });
+	assert.deepEqual(JSON.parse(JSON.stringify(sw.shown)), [
+		{ title: "Alice", options: { body: "Lunch?", tag: "msg_42", icon: "/icon-192.png", data: { url: "/v2/inbox/msg_42" } } },
+		{ title: "bob@example.org", options: { body: "(no subject)", tag: "msg_43", icon: "/icon-192.png", data: { url: "/v2/inbox/msg_43" } } },
+		{ title: "New mail", options: { body: "(no subject)", icon: "/icon-192.png", data: { url: "/v2/inbox" } } },
+	]);
+	assert.ok(sw.listeners.pushsubscriptionchange, "re-subscribes when the push service rotates the subscription");
+});
+
+test("notification click focuses an open v2 window and opens the message there, or opens a new window", async () => {
+	const messages = [];
+	const v2Window = {
+		url: "https://mail.example.com/v2/inbox",
+		focus: async () => v2Window,
+		postMessage: (message) => messages.push(message),
+		navigate: async () => {},
+	};
+	const classicWindow = { url: "https://mail.example.com/settings/account", focus: async () => classicWindow, postMessage: () => assert.fail("classic window") };
+	let closed = 0;
+	const notification = { data: { url: "/v2/inbox/msg_42" }, close: () => { closed += 1; } };
+
+	const open = await loadServiceWorker({ windows: [classicWindow, v2Window] });
+	await open.dispatch("notificationclick", { notification });
+	assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ type: "mf:open", url: "https://mail.example.com/v2/inbox/msg_42" }]);
+	assert.equal(open.opened.length, 0);
+
+	const none = await loadServiceWorker({ windows: [classicWindow] });
+	await none.dispatch("notificationclick", { notification });
+	assert.deepEqual([...none.opened], ["https://mail.example.com/v2/inbox/msg_42"]);
+	assert.equal(closed, 2);
+});
+
+test("a send goes ahead only with the claim on its draft", () => {
+	assert.equal(v2.draftForSend(null, null), null, "a fresh message has no draft");
+	const draft = { id: "msg_1" };
+	assert.equal(v2.draftForSend("msg_1", { outcome: "claimed", draft }), draft);
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "gone" }), v2.DraftGoneError);
+	assert.throws(() => v2.draftForSend("msg_1", null), /already sent or its draft was discarded/);
+	// Another request holds the claim: refused, not sent a second time.
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "sending" }), v2.DraftSendingError);
+	assert.throws(() => v2.draftForSend("msg_1", { outcome: "sending" }), /already being sent/);
+});
+
+test("v2 pages tell htmx to settle a swap at once (#31)", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = { env: {}, request: new Request(url), user: { id: "usr_1", email: "me@example.com", name: "Me" }, url, mailboxes: [{ id: "mbx_1", address: "me@example.com" }], scopeMailboxIds: ["mbx_1"], selectedMailboxId: null, theme: "system", shortcutsEnabled: true, htmx: false };
+	const nav = { counts: { inbox: 0, spam: 0, drafts: 0, folders: new Map() }, folders: [], active: { view: "inbox", folderId: null } };
+	const out = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	const content = /<meta name="htmx-config" content="([^"]*)">/.exec(out)?.[1];
+	assert.ok(content, "the page carries an htmx-config meta");
+	const config = JSON.parse(content.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&"));
+	// htmx wires a swapped-in page's hx- attributes, and app.js runs onPage (which closes menus) and
+	// the tablet split list, only when the swap settles. Any settle delay is a window in which a click
+	// on the new page does nothing: the details toggle has no listener yet, and a menu opened in it is
+	// shut again.
+	assert.equal(config.defaultSettleDelay, 0);
+});
+
+test("touch markup: the keyboard resizes the page, the rail names its items, recipients get an email keyboard, details can close", () => {
+	const url = new URL("https://mail.example.com/v2/inbox");
+	const ctx = {
+		env: {},
+		request: new Request(url),
+		user: { id: "usr_1", email: "me@example.com", name: "Me" },
+		url,
+		mailboxes: [{ id: "mbx_1", address: "me@example.com" }],
+		scopeMailboxIds: ["mbx_1"],
+		selectedMailboxId: null,
+		theme: "system",
+		shortcutsEnabled: true,
+		htmx: false,
+	};
+	const nav = { counts: { inbox: 2, spam: 0, drafts: 0, folders: new Map() }, folders: [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }], active: { view: "inbox", folderId: null } };
+	const page = String(v2.renderPage(ctx, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
+	assert.match(page, /<meta name="viewport" content="[^"]*interactive-widget=resizes-content[^"]*">/);
+	// The tablet rail hides labels, so every item carries its name as a title.
+	assert.match(page, /href="\/v2\/inbox" title="Inbox"/);
+	assert.match(page, /title="Receipts"/);
+	for (const label of ["Settings", "Keyboard shortcuts", "Switch to classic"]) assert.ok(page.includes(`title="${label}"`), label);
+
+	const composer = String(v2.renderComposer(
+		{ id: null, mailboxId: "mbx_1", from: "me@example.com", to: "a@example.com", cc: "", bcc: "", subject: "", bodyHtml: "", quoteHtml: "", inReplyTo: null, references: null, threadId: null, attachments: [] },
+		{ mailboxes: [{ id: "mbx_1", address: "me@example.com", name: "Me", canSend: true, senderAddresses: [], catchAllHostnames: [] }], mode: "page", key: "t", returnHref: "/v2/inbox" },
+	));
+	const recipients = composer.match(/<input[^>]*data-recipients[^>]*>/g) ?? [];
+	assert.equal(recipients.length, 3);
+	for (const input of recipients) {
+		assert.match(input, /inputmode="email"/);
+		assert.match(input, /autocapitalize="off"/);
+		assert.match(input, /enterkeyhint="next"/);
+	}
+	// The composer key is left for app.js to make up per composer: a cached page must not share one.
+	assert.match(composer, /<input type="hidden" name="composeKey" value="" data-compose-key>/);
+
+	const details = String(v2.renderDetails(
+		{ id: "msg_1", direction: "inbound", fromAddr: "a@example.com", toAddr: "me@example.com", ccAddr: null, bccAddr: null, subject: "Hi", deliveredTo: null, createdAt: new Date("2026-10-14T08:00:00Z") },
+		null,
+		false,
+		"UTC",
+	));
+	// The close button reuses the details toggle, so it needs no script of its own.
+	assert.match(details, /<button type="button" class="icon-button sheet-close" data-details="msg_1" aria-label="Close details">/);
+});
+
+test("toolbar buttons outside their form submit it with their own name and value", () => {
+	const url = new URL("https://mail.example.com/v2/inbox/msg_1");
+	const ctx = { user: { id: "usr_1", email: "me@example.com", name: "Me" }, url, mailboxes: [], scopeMailboxIds: ["mbx_1"] };
+	const folders = [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }];
+	const message = {
+		id: "msg_1", mailboxId: "mbx_1", direction: "inbound", status: "received", folderId: null, fromAddr: "a@example.com", fromName: "A", toAddr: "me@example.com",
+		ccAddr: null, bccAddr: null, deliveredTo: null, subject: "Hi", snippet: "Hi", textBody: "Hi", htmlBody: null, createdAt: new Date("2026-10-14T08:00:00Z"),
+		read: true, starred: false, providerMessageId: null, references: null, threadId: null, attachments: [],
+	};
+	const pages = [];
+	for (const view of ["inbox", "archive", "spam", "trash", "starred", "folder", "drafts"]) {
+		pages.push([`thread ${view}`, String(v2.renderThreadMain(ctx, {
+			view, folderId: view === "folder" ? "fld_1" : null, q: "", thread: { key: "msg_1", subject: "Hi", messages: [message], mailboxId: "mbx_1" },
+			listHref: `/v2/${view}`, index: 0, total: 1, newerHref: null, olderHref: null, folders, timeZone: "UTC", ownAddresses: new Set(["me@example.com"]), expandedIds: new Set(),
+		}))]);
+	}
+	for (const view of ["inbox", "archive", "spam", "trash", "sent", "drafts", "all"]) {
+		pages.push([`list ${view}`, String(v2.renderListMain(ctx, {
+			view, title: view, folderId: null, q: "", page: { rows: [], total: 0, page: 1, pageSize: 50 }, folders, timeZone: "UTC", emptyText: "Nothing here.",
+		}))]);
+	}
+	for (const [name, markup] of pages) {
+		const buttons = markup.match(/<button\b[^>]*\sform="[^"]*"[^>]*>/g) ?? [];
+		assert.ok(buttons.length > 0, name);
+		// htmx records the clicked button of a boosted form only for type="submit" buttons that name the form.
+		for (const button of buttons) assert.match(button, /\stype="submit"/, `${name}: ${button}`);
+		// Enter in the snooze date field clicks the form's first submit button: that must be the custom snooze.
+		for (const formId of new Set(buttons.map((button) => button.match(/\sform="([^"]*)"/)[1]))) {
+			const own = buttons.filter((button) => button.includes(`form="${formId}"`));
+			if (!markup.includes(`name="snoozeAt" form="${formId}"`)) {
+				assert.ok(!own.some((button) => button.includes(" hidden")), `${name}: no hidden default without a date field`);
+				continue;
+			}
+			assert.match(own[0], /name="snooze" value="custom" hidden/, `${name}: ${own[0]}`);
+		}
+	}
+	// The toolbar focus shortcut lands on the first link or button, so the hidden one never comes first.
+	for (const [name, markup] of pages) {
+		const toolbar = markup.slice(markup.indexOf('class="toolbar"'));
+		const first = toolbar.match(/<(a|button|summary)\b[^>]*>/)[0];
+		assert.ok(!first.includes(" hidden"), `${name}: ${first}`);
+	}
+});
+
+test("on a phone every list action fits: the pager hides while selecting and the rest go into More (#47)", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(join(root, "public/v2-assets/app.css"), "utf8");
+	const appJs = await readFile(join(root, "public/v2-assets/app.js"), "utf8");
+	const phone = css.slice(css.indexOf("/* ---------- touch: sheets, gestures, recipients ---------- */"));
+	const phoneBlock = phone.slice(phone.indexOf("@media (max-width: 899px) {"), phone.indexOf("@media (max-width: 1199px)"));
+	// What the markup below relies on, all of it inside the <900px rules so desktop and tablet keep their toolbar.
+	assert.match(phoneBlock, /\[data-page="list"\]\.has-selection \.tb-pager \{ display: none; \}/);
+	assert.match(phoneBlock, /\.tb-selected \.tb-overflow \{ display: none; \}/);
+	assert.match(phoneBlock, /\.tb-more \{ display: block; \}/);
+	assert.match(phoneBlock, /body:has\(#main details\.menu\[open\]\) \.fab \{ display: none; \}/, "the compose button stays off an open sheet");
+	assert.match(css, /\.has-selection \.tb-idle \{ display: none; \}\n(\/\*.*\*\/\n)?\.tb-more \{ display: none; \}/, "More is hidden outside phones, next to the other selection rules");
+	assert.match(phone, /@media \(max-width: 389px\) \{\s*\.tb-count-label \{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect\(0 0 0 0\);/, "the word is clipped, not removed");
+	assert.match(appJs, /className: "tb-count-label", textContent: " selected"/, "app.js writes the count as number + label");
+
+	const ctx = { user: { id: "usr_1", email: "me@example.com", name: "Me" }, url: new URL("https://mail.example.com/v2/inbox"), mailboxes: [], scopeMailboxIds: ["mbx_1"] };
+	const folders = [{ id: "fld_1", name: "Receipts", color: null, unread: 0 }];
+	for (const view of ["inbox", "archive", "spam", "trash", "starred", "snoozed", "folder", "search", "all", "sent", "drafts"]) {
+		const markup = String(v2.renderListMain(ctx, {
+			view, title: view, folderId: view === "folder" ? "fld_1" : null, q: view === "search" ? "x" : "", page: { rows: [], total: 0, page: 1, pageSize: 50 }, folders, timeZone: "UTC", emptyText: "Nothing here.",
+		}));
+		assert.match(markup, /<div class="page" data-page="list"/, view);
+		const toolbar = markup.slice(markup.indexOf('<div class="toolbar"'), markup.indexOf('<form id="list-form"'));
+		assert.match(toolbar, /<div class="tb-pager">/, `${view}: the pager sits in the toolbar`);
+		const selected = toolbar.slice(toolbar.indexOf('<div class="tb-group tb-selected">'), toolbar.indexOf('<div class="tb-spacer">'));
+		const more = selected.match(/<details class="menu tb-more" data-menu="more">[\s\S]*?<\/details>/)?.[0];
+		assert.ok(more, `${view}: no More menu`);
+		const inline = selected.replace(/<details[\s\S]*?<\/details>/g, "");
+		const values = (markup, pattern) => [...markup.matchAll(pattern)].map((match) => match[1]);
+		const overflow = values(inline, /<button class="icon-button tb-overflow"[^>]*\svalue="([^"]+)"/g);
+		const shown = values(inline, /<button class="icon-button"[^>]*\svalue="([^"]+)"/g);
+		assert.deepEqual(values(more, /<button class="menu-item"[^>]*name="action" value="([^"]+)"/g), overflow, `${view}: More holds exactly the hidden actions`);
+		assert.ok(["read", "unread"].every((value) => overflow.includes(value)), `${view}: ${overflow}`);
+		assert.equal(overflow.includes("spam"), view !== "spam" && view !== "drafts", `${view}: spam`);
+		const menus = values(selected, /<details class="[^"]*" data-menu="([^"]+)"/g);
+		const canMove = view !== "sent" && view !== "drafts";
+		assert.deepEqual(menus, canMove ? ["snooze", "move", "more"] : ["more"], view);
+		// Select all, the count and at most five 44px controls fit 360px.
+		assert.ok(shown.length + menus.length <= 5, `${view}: ${shown} + ${menus}`);
+		assert.equal((markup.match(/data-menu="snooze"/g) ?? []).length, canMove ? 1 : 0, `${view}: one snooze menu`);
+		assert.equal((markup.match(/name="snoozeAt"/g) ?? []).length, canMove ? 1 : 0, `${view}: one snooze date field`);
+	}
 });

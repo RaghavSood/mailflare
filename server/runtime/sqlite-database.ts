@@ -52,13 +52,18 @@ class SqlitePreparedStatement {
 		return (column ? row[column] : row) as T;
 	}
 
-	async run<T = Row>() {
+	/** The statement's D1 result, computed synchronously so a batch can run it inside a transaction. */
+	execute<T = Row>() {
 		if (this.isRead()) {
 			const results = this.statement().all(...this.params) as T[];
 			return { results, success: true as const, meta: meta() };
 		}
 		const info = this.statement().run(...this.params);
 		return { results: [] as T[], success: true as const, meta: meta(info) };
+	}
+
+	async run<T = Row>() {
+		return this.execute<T>();
 	}
 
 	async all<T = Row>() {
@@ -94,18 +99,13 @@ export class SqliteDatabase {
 		return new SqlitePreparedStatement(this.db, sql);
 	}
 
-	/** Run statements atomically, like D1's batch. */
+	/**
+	 * Run statements atomically, like D1's batch. Nothing is awaited inside the transaction, so a
+	 * concurrent request cannot start its own batch within this one (#34), and better-sqlite3 rolls
+	 * the whole batch back if any statement throws.
+	 */
 	async batch<T = Row>(statements: SqlitePreparedStatement[]) {
-		const results: Awaited<ReturnType<SqlitePreparedStatement["all"]>>[] = [];
-		this.db.exec("BEGIN");
-		try {
-			for (const statement of statements) results.push(await statement.all<T>());
-			this.db.exec("COMMIT");
-		} catch (error) {
-			this.db.exec("ROLLBACK");
-			throw error;
-		}
-		return results;
+		return this.db.transaction(() => statements.map((statement) => statement.execute<T>()))();
 	}
 
 	async exec(sql: string) {

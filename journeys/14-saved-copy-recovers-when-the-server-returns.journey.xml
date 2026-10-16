@@ -1,0 +1,18 @@
+<journey name="A saved copy recovers when the server comes back">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, online, and the service worker has been registered by an earlier visit.
+		The device keeps its network connection throughout; only the Mailflare server is out of reach, so the browser still reports being online.
+		A visited page is served from the device while the server cannot be reached, and is reloaded as soon as the server answers again.
+	</description>
+	<actions>
+		<action>Tap the first conversation in the inbox list and wait for it to load</action>
+		<action>Press the Android Back button once to return to the inbox</action>
+		<action>Make the Mailflare server unreachable without turning on Airplane mode (on an emulator, cut the `adb reverse` tunnel to the server and any connection already open through it)</action>
+		<action>Tap the first conversation in the inbox list</action>
+		<action>Verify that the conversation's subject and message text are shown, and that the banner at the top reads "Couldn't reach Mailflare" followed by "copy from" and a time</action>
+		<action>Wait 15 seconds</action>
+		<action>Verify that the banner still reads "Couldn't reach Mailflare" and that no error message or browser error page is shown</action>
+		<action>Make the Mailflare server reachable again and wait 30 seconds</action>
+		<action>Verify that the banner is no longer shown, the "Search mail" field is back at the top, and the same conversation is still shown</action>
+	</actions>
+</journey>

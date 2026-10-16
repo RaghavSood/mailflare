@@ -33,6 +33,13 @@ export class RealtimeHubRegistry {
 		}
 	}
 
+	/** Open sockets for one user, as RealtimeHub's /connections answers. */
+	connectionsFor(userId: string) {
+		let total = 0;
+		for (const socket of this.sockets.get(userId) ?? []) if (socket.readyState === socket.OPEN) total += 1;
+		return total;
+	}
+
 	connections() {
 		let total = 0;
 		for (const set of this.sockets.values()) total += set.size;
@@ -42,6 +49,7 @@ export class RealtimeHubRegistry {
 	/** The `DurableObjectNamespace` surface the app uses: `getByName(id).fetch(...)`. */
 	namespace(): DurableObjectNamespace {
 		const notify = (userId: string, payload: unknown) => this.notify(userId, payload);
+		const connectionsFor = (userId: string) => this.connectionsFor(userId);
 		const stub = (userId: string) => ({
 			async fetch(input: RequestInfo | URL, init?: RequestInit) {
 				const request = input instanceof Request ? input : new Request(input, init);
@@ -50,6 +58,7 @@ export class RealtimeHubRegistry {
 					notify(userId, await request.json());
 					return new Response(null, { status: 204 });
 				}
+				if (url.pathname === "/connections") return Response.json({ connections: connectionsFor(userId) });
 				return new Response("Not found", { status: 404 });
 			},
 		});

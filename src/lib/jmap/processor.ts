@@ -3,7 +3,8 @@ import { JmapError } from "./errors";
 import { mailboxChanges, mailboxGet, mailboxQuery, mailboxSet } from "./mailboxes";
 import { emailChanges, emailGet, emailImport, emailQuery, emailQueryChanges, emailSet, emailUnsupported, searchSnippetGet, threadChanges, threadGet } from "./emails";
 import { emailSubmissionChanges, emailSubmissionGet, emailSubmissionQuery, emailSubmissionSet, identityChanges, identityGet, identitySet } from "./identities";
-import { getEmailState, getMailboxState } from "./state";
+import { digestIds } from "./changes-utils";
+import { forgetMemo } from "./context-utils";
 import type { JmapContext, JmapInvocation, JmapMethodHandler, JmapRequest, JmapResponse } from "./types";
 
 const METHODS: Record<string, JmapMethodHandler> = {
@@ -110,6 +111,8 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 				responses.push(["Email/set", { accountId: ctx.accountId, oldState: clean.oldState, newState: clean.newState, updated: {}, destroyed: __destroyedEmails, created: {} }, callId]);
 			}
 		} catch (error) {
+			// A handler that failed after writing never refreshed the memoized state; do not let later calls reuse it.
+			forgetMemo(ctx);
 			if (error instanceof JmapError) {
 				responses.push(["error", error.toMethodError(), callId]);
 			} else {
@@ -122,8 +125,13 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 	return { methodResponses: responses, createdIds: Object.keys(ctx.createdIds).length ? ctx.createdIds : undefined, sessionState: await sessionState(ctx) };
 }
 
+/**
+ * RFC 8620 §2: a changed sessionState tells the client to fetch the Session
+ * object again, so it must only move when that object would differ. Here
+ * the object depends on nothing but the account, never on mail state.
+ */
 export async function sessionState(ctx: JmapContext): Promise<string> {
-	return `${await getMailboxState(ctx)}:${(await getEmailState(ctx)).split(".")[0]}`;
+	return digestIds([ctx.auth.userId, ctx.auth.email]);
 }
 
 export function validateRequest(body: unknown): JmapRequest {

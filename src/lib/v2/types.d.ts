@@ -1,4 +1,5 @@
 import type { SessionUser } from "@/lib/auth/types";
+import type { Branding } from "@/lib/branding/types";
 
 export type V2ViewKey =
 	| "inbox"
@@ -71,6 +72,10 @@ export type V2Context = {
 	shortcutsEnabled: boolean;
 	/** Set by htmx; such requests may skip parts of the page the client keeps. */
 	htmx: boolean;
+	/** VAPID_PUBLIC_KEY when Web Push is configured, for the page to subscribe with. */
+	vapidPublicKey: string | null;
+	/** Licensed custom name and icon; absent renders the packaged Mailflare branding. */
+	branding?: Branding | null;
 };
 
 export type V2Folder = { id: string; name: string; color: string | null; mailboxId: string; unread: number };

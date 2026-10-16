@@ -1,0 +1,11 @@
+<journey name="Pull to refresh the inbox">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in, scrolled to the top.
+		Pulling the list down refreshes it in place; it must not trigger a full page reload.
+	</description>
+	<actions>
+		<action>Swipe slowly downwards starting on the first conversation row, ending near the middle of the screen</action>
+		<action>Verify that a refresh indicator appears at the top of the list, or that the list has refreshed</action>
+		<action>Verify that the inbox is still shown with the "Inbox" heading and the message list, and that no sign-in page or browser error page is shown</action>
+	</actions>
+</journey>

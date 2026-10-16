@@ -1,4 +1,4 @@
-import { getEmailAddressList, splitEmailAddressList } from "@/lib/email/address";
+import { getEmailAddressList, parseEmailAddressParts, splitEmailAddressList } from "@/lib/email/address";
 import { htmlToReadableText } from "@/lib/email/reply-content-utils";
 import { escapeHtml } from "../html";
 
@@ -104,4 +104,49 @@ export function parseFromValue(value: string | null | undefined): { mailboxId: s
 /** A comma-separated recipient field, normalised the way the send path expects. */
 export function normalizeRecipients(value: string | null | undefined): string {
 	return splitEmailAddressList(value).map((entry) => entry.trim()).filter(Boolean).join(", ");
+}
+
+/**
+ * Why a send must be refused for its recipients, or null: To needs an entry, and every To, Cc and
+ * Bcc entry must be an address ("@" or "maya" alone is not, #53). recipientProblem in
+ * public/v2-assets/app.js applies the same rule before the request is made.
+ */
+export function recipientProblem(input: { to: string; cc?: string | null; bcc?: string | null }): string | null {
+	for (const [field, value] of [["to", input.to], ["cc", input.cc], ["bcc", input.bcc]] as const) {
+		const entries = splitEmailAddressList(value);
+		const bad = entries.find((entry) => !/^[^\s@<>",;]+@[^\s@<>",;]+$/.test(parseEmailAddressParts(entry).address.replace(/^<(.*)>$/, "$1")));
+		if (bad) return `"${bad}" isn't an email address.`;
+		if (field === "to" && !entries.length) return "Add at least one recipient.";
+	}
+	return null;
+}
+
+/** A send named a draft that is gone: it was sent already, or discarded. */
+export class DraftGoneError extends Error {
+	constructor() {
+		super("This message was already sent or its draft was discarded.");
+		this.name = "DraftGoneError";
+	}
+}
+
+/** A send named a draft another request is sending right now. */
+export class DraftSendingError extends Error {
+	constructor() {
+		super("This message is already being sent. If it doesn't appear in Sent, try again in a few minutes.");
+		this.name = "DraftSendingError";
+	}
+}
+
+/**
+ * The stored draft a send continues, or null for a message composed from
+ * scratch. A send that names a draft goes ahead only if it won the claim on
+ * it: a draft that is gone or being sent by another request throws instead of
+ * sending what this request carries, so a replayed send, even one racing the
+ * original, cannot deliver the message twice.
+ */
+export function draftForSend<T>(draftId: string | null, claim: { outcome: "claimed"; draft: T } | { outcome: "gone" | "sending" } | null): T | null {
+	if (!draftId) return null;
+	if (claim?.outcome === "claimed") return claim.draft;
+	if (claim?.outcome === "sending") throw new DraftSendingError();
+	throw new DraftGoneError();
 }

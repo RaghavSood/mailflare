@@ -20,6 +20,19 @@ const nextConfig: NextConfig = {
 				source: "/(.*)",
 				headers: getSecurityHeaders(),
 			},
+			// Mirrors public/_headers for the self-hosted runtime, which serves
+			// public/ through Next rather than Cloudflare assets.
+			{
+				source: "/sw.js",
+				headers: [{ key: "Cache-Control", value: "no-cache" }],
+			},
+			{
+				source: "/manifest.webmanifest",
+				headers: [
+					{ key: "Cache-Control", value: "no-cache" },
+					{ key: "Content-Type", value: "application/manifest+json" },
+				],
+			},
 		];
 	},
 };
