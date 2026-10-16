@@ -288,6 +288,13 @@
       "when": 1788850800012,
       "tag": "0039_add_api_key_digest",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1788850800013,
+      "tag": "0040_add_message_body_size",
+      "breakpoints": true
     }
   ]
 }

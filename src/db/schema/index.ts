@@ -231,6 +231,9 @@ export const messages = sqliteTable(
 		snippet: text("snippet"),
 		textBody: text("text_body"),
 		htmlBody: text("html_body"),
+		// UTF-8 bytes of text_body plus html_body, kept by triggers (migration 0040)
+		// so JMAP can report an Email's size without reading the bodies.
+		bodySize: integer("body_size"),
 		rawR2Key: text("raw_r2_key"),
 		status: text("status").notNull().default("received"),
 		read: integer("read", { mode: "boolean" }).notNull().default(false),

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { messages } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { buildSnippet, parseRawMime } from "@/lib/email/parse";
@@ -10,7 +10,8 @@ import { deleteMessageWithObjects } from "@/lib/email/message-cleanup";
 import { LIMITS, KEYWORD_FLAGGED, KEYWORD_SEEN } from "./constants";
 import { JmapError, invalidArguments } from "./errors";
 import { decodeBlobId, decodeMailboxRef, roleToStatus } from "./ids";
-import { buildEmailObject, loadAttachmentsByMessage, resolveHeaderProperty } from "./email-objects";
+import { buildEmailObject, loadAttachmentsByMessage, pickEmailProperties } from "./email-objects";
+import { chunkForParameters, emailNeedsAttachments, emailNeedsBodies } from "./email-objects-utils";
 import { importFlags, parseReceivedAt, resolveDraftSender, resolveDraftsMailbox } from "./email-import-utils";
 import { filterToSql, mailboxRefCondition, sortToSql } from "./email-query";
 import { QUERY_WINDOW, describeEmailQueryShape, planEmailQueryPage, queryLimit, windowedPage } from "./email-query-utils";
@@ -78,10 +79,49 @@ async function scope(ctx: JmapContext) {
 	return { ids, condition: ids.length ? inArray(messages.mailboxId, ids) : eq(messages.userId, ctx.auth.userId) };
 }
 
-export async function loadMessages(ctx: JmapContext, ids: string[]): Promise<MessageRow[]> {
+const BODY_COLUMNS = new Set(["textBody", "htmlBody", "bodySize"]);
+
+/**
+ * The columns of a message row without its bodies. `htmlBody` is read only
+ * for a row with no snippet, since that is all `preview` falls back to, and
+ * `bodySize` is computed for a row the 0040 backfill has not reached, so a
+ * light row answers every property but the body parts exactly as a full one.
+ */
+function lightMessageColumns() {
+	const columns = getTableColumns(messages);
+	return {
+		...(Object.fromEntries(Object.entries(columns).filter(([key]) => !BODY_COLUMNS.has(key))) as Omit<typeof columns, "textBody" | "htmlBody" | "bodySize">),
+		htmlBody: sql<string | null>`case when ${messages.snippet} is null then ${messages.htmlBody} end`,
+		bodySize: sql<number>`coalesce(${messages.bodySize}, length(cast(coalesce(${messages.textBody}, '') as blob)) + length(cast(coalesce(${messages.htmlBody}, '') as blob)))`,
+	};
+}
+
+/**
+ * Rows for `ids` the account can see. With `bodies: false` the text and HTML
+ * bodies stay in the database (see `lightMessageColumns`); the row's
+ * `textBody` is then null. Ids are split into IN lists D1 can bind next to
+ * the scope's own parameters; rows come back once each, in the order of
+ * `ids`, whatever plan or chunking produced them.
+ */
+export async function loadMessages(ctx: JmapContext, ids: string[], options: { bodies?: boolean } = {}): Promise<MessageRow[]> {
 	if (ids.length === 0) return [];
-	const { condition } = await scope(ctx);
-	return ctx.db.select().from(messages).where(and(condition, inArray(messages.id, ids)));
+	const { ids: scopeIds } = await scope(ctx);
+	// The same rows as scope(), but the unary + keeps the mailbox (or user) term
+	// out of index selection, so SQLite looks each id up by primary key instead
+	// of walking every message the account can see and filtering by id.
+	const condition = scopeIds.length ? inArray(sql`+${messages.mailboxId}`, scopeIds) : sql`+${messages.userId} = ${ctx.auth.userId}`;
+	const unique = Array.from(new Set(ids));
+	const chunks = chunkForParameters(unique, Math.max(scopeIds.length, 1));
+	let rows: MessageRow[];
+	if (options.bodies === false) {
+		const columns = lightMessageColumns();
+		const found = await Promise.all(chunks.map((part) => ctx.db.select(columns).from(messages).where(and(condition, inArray(messages.id, part)))));
+		rows = found.flat().map((row) => ({ ...row, textBody: null }));
+	} else {
+		rows = (await Promise.all(chunks.map((part) => ctx.db.select().from(messages).where(and(condition, inArray(messages.id, part)))))).flat();
+	}
+	const byId = new Map(rows.map((row) => [row.id, row]));
+	return unique.flatMap((id) => byId.get(id) ?? []);
 }
 
 export const emailGet: JmapMethodHandler = async (ctx, args) => {
@@ -91,22 +131,16 @@ export const emailGet: JmapMethodHandler = async (ctx, args) => {
 	const properties = args.properties as string[] | null | undefined;
 	const fetchBodies = !!(args.fetchTextBodyValues || args.fetchHTMLBodyValues || args.fetchAllBodyValues);
 	const maxBodyValueBytes = Number(args.maxBodyValueBytes ?? 0);
+	const bodiesLoaded = emailNeedsBodies(properties, fetchBodies);
 
-	const rows = await loadMessages(ctx, ids);
-	const attachments = await loadAttachmentsByMessage(ctx, rows.map((row) => row.id));
+	const rows = await loadMessages(ctx, ids, { bodies: bodiesLoaded });
+	const attachments = emailNeedsAttachments(properties) ? await loadAttachmentsByMessage(ctx, rows.map((row) => row.id)) : new Map();
 	const found = new Set<string>();
 	const list = rows.map((row) => {
 		found.add(row.id);
-		const full = buildEmailObject(row, attachments.get(row.id) ?? [], { fetchBodies, maxBodyValueBytes });
-		if (!properties) return full;
-		const picked: Record<string, unknown> = { id: row.id };
-		for (const key of properties) {
-			if (key.startsWith("header:")) picked[key] = resolveHeaderProperty(row, key);
-			else if (key in full) picked[key] = (full as Record<string, unknown>)[key];
-		}
-		return picked;
+		return pickEmailProperties(row, attachments.get(row.id) ?? [], properties, { fetchBodies, maxBodyValueBytes, bodiesLoaded });
 	});
-	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: ids.filter((id) => !found.has(id)) };
+	return { accountId: ctx.accountId, state: await getEmailState(ctx), list, notFound: Array.from(new Set(ids)).filter((id) => !found.has(id)) };
 };
 
 /** The WHERE and ORDER BY an Email/query's filter and sort describe, within the accessible mailboxes. */
