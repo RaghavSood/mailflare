@@ -6,3 +6,6 @@ export type ApiAuthResult = {
 	scopes: string[];
 	user: typeof users.$inferSelect;
 };
+
+/** Columns a successful authentication updates on its `api_keys` row. */
+export type ApiKeyRowWrite = { keyDigest?: string; lastUsedAt?: Date };

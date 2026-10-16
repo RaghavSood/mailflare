@@ -32,3 +32,27 @@ export function isPushMessage(payload: unknown): payload is PushQueueMessage {
 		typeof message.notification.messageId === "string"
 	);
 }
+
+/**
+ * Paths `handleJmapRequest` owns, which `worker.ts` serves before Next. The
+ * handler answers an OPTIONS request with an open CORS preflight whatever
+ * its path, so it must only ever see these.
+ */
+export function isJmapPath(pathname: string): boolean {
+	return pathname === "/.well-known/jmap" || pathname === "/jmap" || pathname.startsWith("/jmap/");
+}
+
+/**
+ * Next adds the app's security headers (`headers()` in next.config.ts) to
+ * every response it serves. A response `worker.ts` answers itself gets them
+ * here instead, without replacing any header the response already set, such
+ * as a blob download's sandboxing Content-Security-Policy. The copy also has
+ * mutable headers, which `Response.redirect()` does not.
+ */
+export function withDefaultHeaders(response: Response, defaults: Array<{ key: string; value: string }>): Response {
+	const headers = new Headers(response.headers);
+	for (const { key, value } of defaults) {
+		if (!headers.has(key)) headers.set(key, value);
+	}
+	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}

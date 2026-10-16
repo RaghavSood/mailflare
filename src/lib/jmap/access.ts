@@ -1,7 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { folders, mailboxes } from "@/db/schema";
+import { inArray } from "drizzle-orm";
+import { folders } from "@/db/schema";
 import { listAccessibleMailboxes } from "@/lib/mailboxes/access";
-import { getMailboxDomainAddresses } from "@/lib/mailboxes/domain-addresses";
+import { getMailboxDomainAddressesByMailbox } from "@/lib/mailboxes/domain-addresses";
 import { memoize } from "./context-utils";
 import type { AccessibleMailbox, JmapContext } from "./types";
 
@@ -19,12 +19,14 @@ export function listJmapMailboxes(ctx: JmapContext): Promise<AccessibleMailbox[]
 		return rows.map((row) => ({
 			id: row.id,
 			userId: row.userId,
+			domainId: row.domainId,
 			localPart: row.localPart,
 			hostname: row.hostname,
 			displayName: row.displayName,
 			permission: row.permission,
 			type: row.type,
 			isPrimary: row.isPrimary,
+			useAllDomains: row.useAllDomains,
 		}));
 	});
 }
@@ -54,9 +56,7 @@ export async function listFoldersByMailbox(ctx: JmapContext, mailboxIds: string[
 	return result;
 }
 
-/** Addresses each mailbox may send from, for Identity objects. */
-export async function listSendableAddresses(ctx: JmapContext, mailbox: AccessibleMailbox): Promise<string[]> {
-	const [row] = await ctx.db.select().from(mailboxes).where(and(eq(mailboxes.id, mailbox.id))).limit(1);
-	if (!row) return [];
-	return getMailboxDomainAddresses(ctx.db, row);
+/** Addresses each mailbox may send from, for Identity objects, keyed by mailbox id; one batch of queries for all of them. */
+export function listSendableAddresses(ctx: JmapContext, list: AccessibleMailbox[]): Promise<Map<string, string[]>> {
+	return getMailboxDomainAddressesByMailbox(ctx.db, list);
 }

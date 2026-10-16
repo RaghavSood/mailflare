@@ -9,12 +9,13 @@ import { getEmailState, refreshEmailState } from "./state";
 import { JmapError } from "./errors";
 import type { JmapContext, JmapMethodHandler } from "./types";
 
-/** One Identity per address the account may send from. */
+/** One Identity per address the account may send from, from one batch of address queries for every mailbox. */
 export async function buildIdentities(ctx: JmapContext) {
 	const list: Array<Record<string, unknown>> = [];
-	for (const mailbox of await listJmapMailboxes(ctx)) {
-		if (mailbox.permission === "read_only") continue;
-		for (const address of await listSendableAddresses(ctx, mailbox)) {
+	const sendable = (await listJmapMailboxes(ctx)).filter((mailbox) => mailbox.permission !== "read_only");
+	const addresses = await listSendableAddresses(ctx, sendable);
+	for (const mailbox of sendable) {
+		for (const address of addresses.get(mailbox.id) ?? []) {
 			list.push({
 				id: identityId(mailbox.id, address),
 				name: mailbox.displayName ?? "",

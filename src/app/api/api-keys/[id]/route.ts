@@ -8,8 +8,9 @@ import type { ApiKeyRouteParams } from "./types";
 
 /**
  * Revoke an API key. Only the key's owner can revoke it; the key validator
- * matches rows by prefix and hash, so deleting the row is what makes the key
- * stop working. Unknown ids and other users' keys both answer 404 so the
+ * reads the row on every request (by digest, or by prefix and hash for an old
+ * key) and caches nothing, so deleting the row makes the key stop working on
+ * its next request. Unknown ids and other users' keys both answer 404 so the
  * endpoint does not reveal which ids exist.
  */
 export async function DELETE(request: Request, { params }: ApiKeyRouteParams) {

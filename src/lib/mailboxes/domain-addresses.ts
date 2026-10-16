@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
 import { domains, mailboxAliases, mailboxes, routingRules } from "@/db/schema";
 import { deleteEmailRoutingRuleForAddress, ensureEmailRoutingRuleToWorker } from "@/lib/cloudflare-api";
-import { normalizeRecipientLocalPart } from "@/lib/email/recipient-address";
+import { composeMailboxDomainAddresses } from "./domain-addresses-utils";
 import type { MailboxDomainAddressInput } from "./domain-addresses-types";
 
 export async function getMailboxAliasAddresses(
@@ -55,10 +55,9 @@ export async function getMailboxDomainAddresses(
 		.limit(1);
 	if (!primaryDomain) return [];
 
-	const primaryAddress = `${mailbox.localPart}@${primaryDomain.hostname}`.toLowerCase();
 	const aliasAddresses = await getMailboxAliasAddresses(db, mailbox.id);
 	if (!mailbox.useAllDomains) {
-		return [...new Set([primaryAddress, ...aliasAddresses])];
+		return composeMailboxDomainAddresses({ mailbox, primaryHostname: primaryDomain.hostname, aliasAddresses, availableDomains: [], assignedMailboxes: [], assignedAliases: [] });
 	}
 
 	const availableDomains = await db
@@ -75,27 +74,87 @@ export async function getMailboxDomainAddresses(
 			localPart: mailboxAliases.localPart,
 		})
 		.from(mailboxAliases);
-	const normalizedLocalPart = normalizeRecipientLocalPart(mailbox.localPart);
-	const assignedDomainIds = new Set(
-		[
-			...assignedMailboxes.filter(
-				(item) => item.id !== mailbox.id && normalizeRecipientLocalPart(item.localPart) === normalizedLocalPart,
-			),
-			...assignedAliases.filter(
-				(item) => item.mailboxId !== mailbox.id && normalizeRecipientLocalPart(item.localPart) === normalizedLocalPart,
-			),
-		].map((item) => item.domainId),
-	);
+	return composeMailboxDomainAddresses({ mailbox, primaryHostname: primaryDomain.hostname, aliasAddresses, availableDomains, assignedMailboxes, assignedAliases });
+}
 
-	return [
-		...new Set([
-			primaryAddress,
-			...availableDomains
-				.filter((domain) => domain.id !== mailbox.domainId && !assignedDomainIds.has(domain.id))
-				.map((domain) => `${mailbox.localPart}@${domain.hostname}`.toLowerCase()),
-			...aliasAddresses,
-		]),
-	];
+/**
+ * `getMailboxDomainAddresses` for many mailboxes at once, keyed by mailbox id,
+ * in at most five queries however many mailboxes there are (two when none uses
+ * all domains). Each statement is the one-mailbox query with `IN` in place of
+ * `=`, so rows come back in the same per-mailbox order; the claimed local parts
+ * are read only on the domains they could exclude. A mailbox whose domain is
+ * gone maps to an empty list.
+ */
+export async function getMailboxDomainAddressesByMailbox(
+	db: AppDatabase,
+	list: MailboxDomainAddressInput[],
+): Promise<Map<string, string[]>> {
+	const result = new Map<string, string[]>();
+	if (list.length === 0) return result;
+
+	const primaryDomains = await db
+		.select({ id: domains.id, hostname: domains.hostname, userId: domains.userId })
+		.from(domains)
+		.where(inArray(domains.id, [...new Set(list.map((mailbox) => mailbox.domainId))]));
+	const primaryById = new Map(primaryDomains.map((domain) => [domain.id, domain]));
+	const aliasRows = await db
+		.select({ mailboxId: mailboxAliases.mailboxId, localPart: mailboxAliases.localPart, hostname: domains.hostname })
+		.from(mailboxAliases)
+		.innerJoin(domains, eq(mailboxAliases.domainId, domains.id))
+		.where(inArray(mailboxAliases.mailboxId, list.map((mailbox) => mailbox.id)));
+	const aliasesByMailbox = groupBy(aliasRows, (row) => row.mailboxId);
+
+	const ownerIds = [...new Set(list.filter((mailbox) => mailbox.useAllDomains).map((mailbox) => primaryById.get(mailbox.domainId)?.userId).filter((id): id is string => !!id))];
+	const availableDomains = ownerIds.length
+		? await db
+				.select({ id: domains.id, hostname: domains.hostname, userId: domains.userId })
+				.from(domains)
+				.where(and(inArray(domains.userId, ownerIds), eq(domains.status, "active")))
+		: [];
+	const availableByOwner = groupBy(availableDomains, (domain) => domain.userId);
+	const availableIds = availableDomains.map((domain) => domain.id);
+	const assignedMailboxes = availableIds.length
+		? await db
+				.select({ id: mailboxes.id, domainId: mailboxes.domainId, localPart: mailboxes.localPart })
+				.from(mailboxes)
+				.where(inArray(mailboxes.domainId, availableIds))
+		: [];
+	const assignedAliases = availableIds.length
+		? await db
+				.select({ mailboxId: mailboxAliases.mailboxId, domainId: mailboxAliases.domainId, localPart: mailboxAliases.localPart })
+				.from(mailboxAliases)
+				.where(inArray(mailboxAliases.domainId, availableIds))
+		: [];
+
+	for (const mailbox of list) {
+		const primary = primaryById.get(mailbox.domainId);
+		if (!primary) {
+			result.set(mailbox.id, []);
+			continue;
+		}
+		result.set(
+			mailbox.id,
+			composeMailboxDomainAddresses({
+				mailbox,
+				primaryHostname: primary.hostname,
+				aliasAddresses: (aliasesByMailbox.get(mailbox.id) ?? []).map((alias) => `${alias.localPart}@${alias.hostname}`.toLowerCase()),
+				availableDomains: mailbox.useAllDomains ? (availableByOwner.get(primary.userId) ?? []) : [],
+				assignedMailboxes,
+				assignedAliases,
+			}),
+		);
+	}
+	return result;
+}
+
+function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
+	const groups = new Map<string, T[]>();
+	for (const row of rows) {
+		const group = groups.get(key(row));
+		if (group) group.push(row);
+		else groups.set(key(row), [row]);
+	}
+	return groups;
 }
 
 export async function ensureMailboxDomainRouting(

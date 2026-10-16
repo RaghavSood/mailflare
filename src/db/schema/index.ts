@@ -190,20 +190,27 @@ export const folders = sqliteTable(
 	],
 );
 
-export const apiKeys = sqliteTable("api_keys", {
-	id: text("id").primaryKey(),
-	userId: text("user_id")
-		.notNull()
-		.references(() => users.id, { onDelete: "cascade" }),
-	name: text("name").notNull(),
-	prefix: text("prefix").notNull(),
-	keyHash: text("key_hash").notNull(),
-	scopes: text("scopes").notNull(),
-	createdAt: integer("created_at", { mode: "timestamp" })
-		.notNull()
-		.$defaultFn(() => new Date()),
-	lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
-});
+export const apiKeys = sqliteTable(
+	"api_keys",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		prefix: text("prefix").notNull(),
+		/** bcrypt hash; still written so an older build can verify the key, but only read for rows with no digest yet. */
+		keyHash: text("key_hash").notNull(),
+		/** Hex SHA-256 of the full key, the per-request verifier (migration 0039). Null until a pre-0039 key is next used. */
+		keyDigest: text("key_digest"),
+		scopes: text("scopes").notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.$defaultFn(() => new Date()),
+		lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+	},
+	(t) => [uniqueIndex("api_keys_key_digest_idx").on(t.keyDigest)],
+);
 
 export const messages = sqliteTable(
 	"messages",
