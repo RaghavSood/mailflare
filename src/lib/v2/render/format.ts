@@ -100,9 +100,16 @@ export function avatarHue(address: string): number {
 	return hash % 360;
 }
 
-/** "me, Alice, Bob" for To/Cc lines, using "me" for the viewer's own addresses. */
-export function recipientSummary(value: string | null | undefined, own: Set<string>): string {
+/**
+ * "me, Alice, Bob" for To/Cc lines: "me" for a mailbox's own address, and the
+ * full address for the viewer's aliases, so it shows which one the mail reached.
+ */
+export function recipientSummary(value: string | null | undefined, own: Set<string>, aliases: Set<string> = new Set()): string {
 	return splitEmailAddressList(value)
-		.map((entry) => (own.has(bareAddress(entry).toLowerCase()) ? "me" : getEmailDisplayName(entry)))
+		.map((entry) => {
+			const address = bareAddress(entry).toLowerCase();
+			if (own.has(address)) return "me";
+			return aliases.has(address) ? address : getEmailDisplayName(entry);
+		})
 		.join(", ");
 }

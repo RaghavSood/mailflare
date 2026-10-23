@@ -233,6 +233,7 @@ test("list dates read like Gmail in the viewer's zone", () => {
 	assert.equal(v2.initials("Alice Smith"), "AS");
 	assert.equal(v2.initials("  "), "?");
 	assert.equal(v2.recipientSummary(`"Bob B" <bob@x.com>, ME@y.com`, new Set(["me@y.com"])), "Bob B, me");
+	assert.equal(v2.recipientSummary(`"Dji" <DJI@y.com>, me@y.com`, new Set(["me@y.com"]), new Set(["dji@y.com"])), "dji@y.com, me");
 });
 
 test("lists read the conversation summary except for searches and drafts", () => {

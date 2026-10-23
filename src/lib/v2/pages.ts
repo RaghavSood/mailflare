@@ -131,11 +131,13 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 		]);
 		const linkTo = (id: string | null, position: number) => (id ? threadHref(route.view, id, { folderId: route.folderId, q: q || null, i: position }) : null);
 		const listPage = index === null ? undefined : Math.floor(index / V2_PAGE_SIZE) + 1;
-		const own = new Set(ctx.mailboxes.flatMap((mailbox) => [mailbox.address, ...mailbox.senderAddresses]));
+		const own = new Set(ctx.mailboxes.map((mailbox) => mailbox.address.toLowerCase()));
+		const aliases = new Set(ctx.mailboxes.flatMap((mailbox) => mailbox.senderAddresses.map((address) => address.toLowerCase())));
 		for (const message of thread.messages) {
-			if (message.direction === "outbound") for (const address of getEmailAddressList(message.fromAddr)) own.add(address);
-			if (message.deliveredTo) own.add(message.deliveredTo.toLowerCase());
+			if (message.direction === "outbound") for (const address of getEmailAddressList(message.fromAddr)) aliases.add(address);
+			if (message.deliveredTo) aliases.add(message.deliveredTo.toLowerCase());
 		}
+		for (const address of own) aliases.delete(address);
 		const latest = thread.messages[thread.messages.length - 1];
 		const expandedIds = new Set([latest.id, ...unreadIds]);
 		const main = renderThreadMain(ctx, {
@@ -151,6 +153,7 @@ export async function renderRoute(ctx: V2Context, extras: { toast?: Html | null 
 			folders: nav.folders,
 			timeZone,
 			ownAddresses: own,
+			aliasAddresses: aliases,
 			expandedIds,
 		});
 		return { status: 200, body: renderPage(ctx, { title: `${thread.subject?.trim() || "(no subject)"} - ${appNameOf(ctx)}`, nav, q, main, toast: extras.toast }) };

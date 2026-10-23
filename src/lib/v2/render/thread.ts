@@ -20,7 +20,10 @@ export type ThreadPageInput = {
 	olderHref: string | null;
 	folders: V2Folder[];
 	timeZone: string;
+	/** Each mailbox's own address, shown as "me". */
 	ownAddresses: Set<string>;
+	/** The viewer's other addresses (aliases, catch-alls), shown in full. */
+	aliasAddresses: Set<string>;
 	/** Messages to show open: the newest and any that were unread. */
 	expandedIds: Set<string>;
 	replySlot?: Html | null;
@@ -61,8 +64,8 @@ function renderMessage(message: V2ThreadMessage, input: ThreadPageInput, expande
 	const name = message.direction === "outbound" ? "me" : displayName(message.fromAddr, message.fromName);
 	const fullName = message.direction === "outbound" ? displayName(message.fromAddr, message.fromName) : name;
 	const address = bareAddress(message.fromAddr);
-	const to = recipientSummary(message.toAddr, input.ownAddresses);
-	const cc = recipientSummary(message.ccAddr, input.ownAddresses);
+	const to = recipientSummary(message.toAddr, input.ownAddresses, input.aliasAddresses);
+	const cc = recipientSummary(message.ccAddr, input.ownAddresses, input.aliasAddresses);
 	const hidden = getHiddenEnvelopeRecipient({
 		id: message.id,
 		direction: message.direction,
