@@ -28,9 +28,9 @@ export type ThreadPageInput = {
 
 const STATUS_LABELS: Record<string, string> = { received: "Inbox", archived: "Archive", spam: "Spam", trash: "Trash", sent: "Sent", queued: "Scheduled" };
 
-/** Plain-text bodies fold everything from the first "On … wrote:" line, like quoted HTML. */
+/** Plain-text bodies fold everything from the first "On … wrote:" line or Outlook "From: / Sent:" header, like quoted HTML. */
 function renderTextBody(text: string): Html {
-	const match = text.match(/^(?:On .{4,200}wrote:|-{2,}\s*Original Message\s*-{2,}|-{5,} ?Forwarded message ?-{5,})\s*$/m);
+	const match = text.match(/^(?:On .{4,200}wrote:|-{2,}\s*Original Message\s*-{2,}|-{5,} ?Forwarded message ?-{5,}|\*?From:\*? .+\r?\n\*?(?:Sent|Date):\*? .+)\s*$/m);
 	if (!match || match.index === undefined || match.index < 1) {
 		return html`<div class="mail-text">${raw(plainTextToHtml(text))}</div>`;
 	}

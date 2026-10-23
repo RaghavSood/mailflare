@@ -448,26 +448,45 @@
 		}
 	}
 
+	// Outlook desktop starts the quoted history with a top-bordered "From: / Sent: / To:" block that has no class or id.
+	const OUTLOOK_HEADER = /^\s*(?:From|Von|De|Da|Van|Från|Fra|Od|От)\s*:/i;
+
+	function findOutlookHeader(doc) {
+		for (const element of doc.querySelectorAll("div[style*='border-top']")) {
+			if (!/border-top:\s*solid/i.test(element.getAttribute("style") ?? "")) continue;
+			if (!OUTLOOK_HEADER.test(element.textContent ?? "")) continue;
+			// Outlook wraps the bordered block in a bare <div>; start there so none of it stays visible.
+			const parent = element.parentElement;
+			return parent && parent !== doc.body && parent.children.length === 1 ? parent : element;
+		}
+		return null;
+	}
+
+	/** An element and everything after it in the document, as whole elements. */
+	function restOfDocument(element, body) {
+		const elements = [element];
+		for (let node = element; node && node !== body; node = node.parentElement) {
+			for (let sibling = node.nextElementSibling; sibling; sibling = sibling.nextElementSibling) elements.push(sibling);
+		}
+		return elements;
+	}
+
 	function foldQuote(frame) {
 		const doc = frame.contentDocument;
 		if (!doc?.body || frame.dataset.folded) return;
 		frame.dataset.folded = "1";
-		const quote = QUOTE_SELECTORS.map((selector) => doc.querySelector(selector)).find(Boolean);
+		// The earliest marker wins: an Outlook reply can quote a Gmail one, whose marker sits deep inside the history.
+		const quote = [...QUOTE_SELECTORS.map((selector) => doc.querySelector(selector)), findOutlookHeader(doc)]
+			.filter(Boolean)
+			.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))[0];
 		if (!quote) return;
 		// Only fold when there is something above the quote to read.
 		const before = doc.body.innerText.split(quote.innerText)[0]?.trim() ?? "";
 		if (!before) return;
-		let node = quote;
-		if (quote.matches("#divRplyFwdMsg, #appendonsend")) {
-			const hidden = [];
-			while (node) {
-				hidden.push(node);
-				node = node.nextElementSibling;
-			}
-			hidden.forEach((element) => element.classList.add("mf-quote-hidden"));
-		} else {
-			quote.classList.add("mf-quote-hidden");
-		}
+		// Outlook's markers open the history rather than wrap it, so everything after them goes too.
+		const outlook = quote.matches("#divRplyFwdMsg, #appendonsend") || !quote.matches(QUOTE_SELECTORS.join(","));
+		const hidden = outlook ? restOfDocument(quote, doc.body) : [quote];
+		hidden.forEach((element) => element.classList.add("mf-quote-hidden"));
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "quote-toggle";
