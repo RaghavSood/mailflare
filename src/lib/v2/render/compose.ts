@@ -95,6 +95,7 @@ export function renderComposer(
 		</div>
 		<div class="cmp-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body" data-editor>${raw(neutralizeEmailHtml(draft.bodyHtml))}</div>
 		${draft.quoteHtml ? html`<div class="cmp-quote" title="The quoted message is sent below your reply">${icon("quote")}<span>${draft.inReplyTo ? "Quoted text" : "Forwarded message"} included</span></div>` : ""}
+		<template data-cmp-x-icon>${icon("x")}</template>
 		<div class="cmp-files" data-cmp-files>
 			${draft.attachments.map((file) => html`<span class="file-chip" data-stored-attachment="${file.id}">${icon("paperclip")}<span>${file.filename}</span><small>${formatSize(file.size)}</small><button type="button" class="icon-button" data-remove-attachment="${file.id}" aria-label="${`Remove ${file.filename}`}">${icon("x")}</button></span>`)}
 		</div>

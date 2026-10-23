@@ -1358,7 +1358,7 @@
 				custom.hidden = !isCustom;
 				if (isCustom) custom.focus();
 			}
-			if (target.matches("[data-cmp-attach]")) showPendingFiles(form, target);
+			if (target.matches("[data-cmp-attach]")) addPendingFiles(form, target);
 			if (!target.matches("[data-cmp-attach]")) schedule();
 		});
 		form.addEventListener("click", (event) => {
@@ -1380,6 +1380,8 @@
 			if (target.closest("[data-cmp-discard]")) discard(form);
 			const remove = target.closest("[data-remove-attachment]");
 			if (remove) removeStoredAttachment(form, remove);
+			const removePending = target.closest("[data-remove-pending]");
+			if (removePending) removePendingFile(form, Number(removePending.dataset.removePending));
 		});
 		form.addEventListener("submit", (event) => {
 			const editor = $("[data-editor]", form);
@@ -1409,10 +1411,34 @@
 		});
 	}
 
+	/** Point the file input at these files; it is what drafts, sends and the outbox read. */
+	function setPendingFiles(form, input, files) {
+		const transfer = new DataTransfer();
+		files.forEach((file) => transfer.items.add(file));
+		input.files = transfer.files;
+		form.mfPendingFiles = [...transfer.files];
+		showPendingFiles(form, input);
+	}
+
+	// A file input holds only its latest pick, so earlier picks are carried into it.
+	function addPendingFiles(form, input) {
+		const files = [...(form.mfPendingFiles ?? [])];
+		const same = (a, b) => a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+		for (const file of input.files) if (!files.some((kept) => same(kept, file))) files.push(file);
+		setPendingFiles(form, input, files);
+	}
+
+	function removePendingFile(form, index) {
+		const input = $("[data-cmp-attach]", form);
+		if (!input) return;
+		setPendingFiles(form, input, [...input.files].filter((_, position) => position !== index));
+	}
+
 	function showPendingFiles(form, input) {
 		const box = $("[data-cmp-files]", form);
+		const removeIcon = $("[data-cmp-x-icon]", form)?.content;
 		$$("[data-pending-file]", box).forEach((chip) => chip.remove());
-		for (const file of input.files) {
+		[...input.files].forEach((file, index) => {
 			const chip = document.createElement("span");
 			chip.className = "file-chip";
 			chip.dataset.pendingFile = "1";
@@ -1420,9 +1446,16 @@
 			name.textContent = file.name;
 			const size = document.createElement("small");
 			size.textContent = file.size < 1048576 ? `${Math.ceil(file.size / 1024)} KB` : `${(file.size / 1048576).toFixed(1)} MB`;
-			chip.append(name, size);
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.className = "icon-button";
+			remove.dataset.removePending = String(index);
+			remove.setAttribute("aria-label", `Remove ${file.name}`);
+			if (removeIcon) remove.append(removeIcon.cloneNode(true));
+			else remove.textContent = "×";
+			chip.append(name, size, remove);
 			box.append(chip);
-		}
+		});
 	}
 
 	async function removeStoredAttachment(form, button) {
