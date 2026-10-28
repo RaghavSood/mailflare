@@ -566,6 +566,7 @@ kbd {
 	border: 1px solid var(--border);
 	min-height: 0;
 }
+.composer.is-dropping { outline: 2px dashed var(--accent); outline-offset: -4px; background: var(--accent-softer); }
 .composer-dock {
 	width: min(580px, calc(100vw - 48px));
 	height: min(600px, calc(100dvh - 96px));

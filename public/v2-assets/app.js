@@ -1358,7 +1358,7 @@
 				custom.hidden = !isCustom;
 				if (isCustom) custom.focus();
 			}
-			if (target.matches("[data-cmp-attach]")) addPendingFiles(form, target);
+			if (target.matches("[data-cmp-attach]")) addPendingFiles(form, target, [...target.files]);
 			if (!target.matches("[data-cmp-attach]")) schedule();
 		});
 		form.addEventListener("click", (event) => {
@@ -1382,6 +1382,23 @@
 			if (remove) removeStoredAttachment(form, remove);
 			const removePending = target.closest("[data-remove-pending]");
 			if (removePending) removePendingFile(form, Number(removePending.dataset.removePending));
+		});
+		// Files dropped anywhere on the composer join its attachments; the editor would otherwise inline them.
+		form.addEventListener("dragover", (event) => {
+			if (!carriesFiles(event)) return;
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "copy";
+			form.classList.add("is-dropping");
+		});
+		form.addEventListener("dragleave", (event) => {
+			if (!form.contains(event.relatedTarget)) form.classList.remove("is-dropping");
+		});
+		form.addEventListener("drop", (event) => {
+			form.classList.remove("is-dropping");
+			if (!carriesFiles(event)) return;
+			event.preventDefault();
+			const input = $("[data-cmp-attach]", form);
+			if (input && event.dataTransfer.files.length) addPendingFiles(form, input, [...event.dataTransfer.files]);
 		});
 		form.addEventListener("submit", (event) => {
 			const editor = $("[data-editor]", form);
@@ -1420,13 +1437,28 @@
 		showPendingFiles(form, input);
 	}
 
-	// A file input holds only its latest pick, so earlier picks are carried into it.
-	function addPendingFiles(form, input) {
+	// A file input holds only its latest pick, so earlier picks and drops are carried into it.
+	function addPendingFiles(form, input, added) {
 		const files = [...(form.mfPendingFiles ?? [])];
 		const same = (a, b) => a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
-		for (const file of input.files) if (!files.some((kept) => same(kept, file))) files.push(file);
+		for (const file of added) if (!files.some((kept) => same(kept, file))) files.push(file);
 		setPendingFiles(form, input, files);
 	}
+
+	function carriesFiles(event) {
+		return [...(event.dataTransfer?.types ?? [])].includes("Files");
+	}
+
+	// A file dropped just outside a composer would replace the page with the file.
+	document.addEventListener("dragover", (event) => {
+		if (carriesFiles(event) && $("[data-composer]") && !event.defaultPrevented) {
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "none";
+		}
+	});
+	document.addEventListener("drop", (event) => {
+		if (carriesFiles(event) && $("[data-composer]") && !event.defaultPrevented) event.preventDefault();
+	});
 
 	function removePendingFile(form, index) {
 		const input = $("[data-cmp-attach]", form);
