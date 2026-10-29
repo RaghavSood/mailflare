@@ -686,9 +686,10 @@
 	let sheetBackPending = false;
 	let htmxRequests = 0;
 
-	const sheetOpen = () => narrowScreen.matches && (body.classList.contains("nav-open") || !!$("#main details.menu[open], #main .msg-details:not([hidden])"));
+	const sheetOpen = () => narrowScreen.matches && (body.classList.contains("nav-open") || !!$("#main details.menu[open], #main .msg-details:not([hidden]), dialog[data-viewer-dialog][open]"));
 
 	function closeSheets() {
+		$("dialog[data-viewer-dialog][open]")?.close();
 		closeNav();
 		closeMenus();
 		$$("#main .msg-details:not([hidden])").forEach((panel) => (panel.hidden = true));
@@ -2725,11 +2726,101 @@
 		}
 	});
 
+	/* Attachment viewer: PDFs and images open over the page instead of downloading.
+	   Links keep their download href, so a modified click, an offline page or a browser
+	   that cannot draw PDFs inline still downloads. Arrows step through the message's
+	   other viewable attachments. */
+
+	let viewerItems = [];
+	let viewerIndex = 0;
+
+	function showViewerItem(index) {
+		const dialog = $("[data-viewer-dialog]");
+		const link = viewerItems[index];
+		if (!dialog || !link) return;
+		viewerIndex = index;
+		const name = link.getAttribute("download") || $(".attachment-name", link)?.textContent || "Attachment";
+		$("[data-viewer-title]", dialog).textContent = name;
+		$("[data-viewer-count]", dialog).textContent = viewerItems.length > 1 ? `${index + 1} of ${viewerItems.length}` : "";
+		$$("[data-viewer-step]", dialog).forEach((button) => (button.hidden = viewerItems.length < 2));
+		const src = link.dataset.viewerSrc;
+		$("[data-viewer-open]", dialog).href = src;
+		const download = $("[data-viewer-download]", dialog);
+		download.href = link.href;
+		download.setAttribute("download", name);
+		const stage = $("[data-viewer-stage]", dialog);
+		const view = link.dataset.viewer === "pdf" ? document.createElement("iframe") : document.createElement("img");
+		if (view instanceof HTMLIFrameElement) view.title = name;
+		else view.alt = name;
+		view.src = src;
+		stage.replaceChildren(view);
+	}
+
+	function viewerOpens(link) {
+		if (!navigator.onLine || !$("[data-viewer-dialog]")) return false;
+		// Android Chrome cannot draw a PDF in a frame; it says so here.
+		return link.dataset.viewer !== "pdf" || navigator.pdfViewerEnabled !== false;
+	}
+
+	function openViewer(link) {
+		const dialog = $("[data-viewer-dialog]");
+		const group = link.closest(".attachments") ?? link.parentElement;
+		viewerItems = $$("a.attachment[data-viewer]", group).filter(viewerOpens);
+		showViewerItem(Math.max(0, viewerItems.indexOf(link)));
+		if (!dialog.open) dialog.showModal();
+	}
+
+	function closeViewer() {
+		const dialog = $("[data-viewer-dialog]");
+		if (dialog?.open) dialog.close();
+	}
+
+	function stepViewer(delta) {
+		if (viewerItems.length < 2) return;
+		showViewerItem((viewerIndex + delta + viewerItems.length) % viewerItems.length);
+	}
+
+	document.addEventListener("click", (event) => {
+		const target = event.target instanceof Element ? event.target : null;
+		const link = target?.closest("a.attachment[data-viewer]");
+		if (link) {
+			if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !viewerOpens(link)) return;
+			event.preventDefault();
+			openViewer(link);
+			return;
+		}
+		const dialog = target?.closest("[data-viewer-dialog]");
+		if (!dialog) return;
+		const step = target.closest("[data-viewer-step]");
+		if (step) stepViewer(Number(step.dataset.viewerStep));
+		// The close button, or the dark space around the file.
+		if (target.closest("[data-viewer-close]") || target === dialog || target.matches("[data-viewer-stage]")) closeViewer();
+	});
+
+	document.addEventListener("keydown", (event) => {
+		const dialog = $("[data-viewer-dialog]");
+		if (!dialog?.open) return;
+		// The page's shortcuts stay off while the viewer is up; Escape still closes it (the dialog's own cancel).
+		event.stopImmediatePropagation();
+		if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+			event.preventDefault();
+			stepViewer(event.key === "ArrowLeft" ? -1 : 1);
+		}
+	}, true);
+
+	// Stop a PDF or image still loading, and let the next open start clean.
+	document.addEventListener("close", (event) => {
+		if (event.target instanceof Element && event.target.matches("[data-viewer-dialog]")) {
+			$("[data-viewer-stage]", event.target).replaceChildren();
+			viewerItems = [];
+		}
+	}, true);
+
 	// Online, the worker keeps a copy of an attachment as it is downloaded (the
 	// download itself never passes through it); offline, that copy is saved instead.
 	document.addEventListener("click", (event) => {
 		const link = event.target instanceof Element ? event.target.closest("a.attachment") : null;
-		if (!link) return;
+		if (!link || event.defaultPrevented) return;
 		if (navigator.onLine) {
 			postToWorker({ type: "keep-file", url: link.href });
 			return;

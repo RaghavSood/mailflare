@@ -30,6 +30,7 @@ await build({
 			export { renderComposer } from "./src/lib/v2/render/compose.ts";
 			export { renderDetails, renderThreadMain } from "./src/lib/v2/render/thread.ts";
 			export { renderListMain } from "./src/lib/v2/render/list.ts";
+			export { attachmentViewerKind, previewContentType } from "./src/lib/email/attachment-preview-utils.ts";
 			export { resolvePushControlState, shownPushControlState, pushKeyFailureState, describePushError, PUSH_OFFLINE_MESSAGE } from "./src/components/settings/push-notifications-utils.ts";
 		`,
 		resolveDir: root,
@@ -234,6 +235,20 @@ test("list dates read like Gmail in the viewer's zone", () => {
 	assert.equal(v2.initials("  "), "?");
 	assert.equal(v2.recipientSummary(`"Bob B" <bob@x.com>, ME@y.com`, new Set(["me@y.com"])), "Bob B, me");
 	assert.equal(v2.recipientSummary(`"Dji" <DJI@y.com>, me@y.com`, new Set(["me@y.com"]), new Set(["dji@y.com"])), "dji@y.com, me");
+});
+
+test("PDFs and drawable images open in the attachment viewer", () => {
+	assert.equal(v2.attachmentViewerKind("application/pdf", "a.pdf"), "pdf");
+	assert.equal(v2.attachmentViewerKind("Application/PDF; name=a.pdf", "a.pdf"), "pdf");
+	assert.equal(v2.attachmentViewerKind("application/octet-stream", "Invoice.PDF"), "pdf");
+	assert.equal(v2.attachmentViewerKind("application/octet-stream", "data.bin"), null);
+	assert.equal(v2.attachmentViewerKind("image/png", "a.png"), "image");
+	assert.equal(v2.attachmentViewerKind("image/jpg", "a.jpg"), "image");
+	assert.equal(v2.attachmentViewerKind("image/svg+xml", "a.svg"), null);
+	assert.equal(v2.attachmentViewerKind("image/heic", "a.heic"), null);
+	assert.equal(v2.attachmentViewerKind("text/calendar", "invite.ics"), null);
+	assert.equal(v2.previewContentType("application/octet-stream", "a.pdf"), "application/pdf");
+	assert.equal(v2.previewContentType("text/csv", "a.pdf"), "text/csv");
 });
 
 test("lists read the conversation summary except for searches and drafts", () => {

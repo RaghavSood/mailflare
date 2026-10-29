@@ -1,6 +1,7 @@
 import { getCurrentUser } from "@/lib/auth/cookies";
 import { getEnv } from "@/lib/cloudflare";
 import { getAttachmentForUser } from "@/lib/email/attachments";
+import { previewContentType } from "@/lib/email/attachment-preview-utils";
 import type { AttachmentRouteParams } from "./types";
 import {
 	getAttachmentContentDisposition,
@@ -20,13 +21,17 @@ export async function GET(request: Request, { params }: AttachmentRouteParams) {
 	const url = new URL(request.url);
 	const previewRequested = url.searchParams.get("preview") === "1";
 	const downloadRequested = url.searchParams.get("download") === "1";
+	// A preview of a PDF labelled application/octet-stream is served as a PDF so the browser draws it.
+	const contentType = previewRequested
+		? previewContentType(attachment.contentType, attachment.filename)
+		: attachment.contentType;
 	const inline =
 		!downloadRequested &&
 		(attachment.disposition === "inline" ||
-			(previewRequested && isPreviewableAttachmentType(attachment.contentType)));
+			(previewRequested && isPreviewableAttachmentType(contentType)));
 	const headers = new Headers();
 	object.writeHttpMetadata(headers);
-	headers.set("Content-Type", attachment.contentType);
+	headers.set("Content-Type", contentType);
 	headers.set("Content-Length", String(attachment.size));
 	headers.set("Content-Disposition", getAttachmentContentDisposition(attachment.filename, inline));
 	headers.set("X-Content-Type-Options", "nosniff");

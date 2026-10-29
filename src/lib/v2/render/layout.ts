@@ -5,7 +5,7 @@ import type { V2Context, V2Counts, V2Folder, V2ViewKey } from "../types";
 import { brandingHeadOf } from "./branding";
 import { formatCount } from "./format";
 
-export const ASSET_VERSION = "26";
+export const ASSET_VERSION = "27";
 export const HTMX_VERSION = "2.0.11";
 
 /** The service worker's URL carries the asset versions it precaches (public/sw.js). */
@@ -173,9 +173,26 @@ export function renderPage(
 </div>
 <div id="compose-dock" class="compose-dock">${input.dock ?? ""}</div>
 ${renderToast(input.toast ?? null)}
+${renderViewer()}
 <button type="button" class="fab" data-compose aria-label="Compose">${icon("pencil")}</button>
 </body>
 </html>`;
+}
+
+/** The attachment viewer app.js fills; it sits outside #main so swaps leave it alone. */
+function renderViewer(): Html {
+	return html`<dialog class="viewer" data-viewer-dialog aria-label="Attachment preview">
+	<div class="viewer-bar">
+		<span class="viewer-title" data-viewer-title></span>
+		<span class="viewer-count" data-viewer-count></span>
+		<button type="button" class="icon-button" data-viewer-step="-1" aria-label="Previous attachment" title="Previous">${icon("chevron-left")}</button>
+		<button type="button" class="icon-button" data-viewer-step="1" aria-label="Next attachment" title="Next">${icon("chevron-right")}</button>
+		<a class="icon-button" data-viewer-open hx-boost="false" target="_blank" rel="noopener" aria-label="Open in new tab" title="Open in new tab">${icon("external-link")}</a>
+		<a class="icon-button" data-viewer-download hx-boost="false" aria-label="Download" title="Download">${icon("download")}</a>
+		<button type="button" class="icon-button" data-viewer-close aria-label="Close preview" title="Close">${icon("x")}</button>
+	</div>
+	<div class="viewer-stage" data-viewer-stage></div>
+</dialog>`;
 }
 
 export function renderToast(content: Html | null): Html {

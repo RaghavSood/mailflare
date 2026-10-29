@@ -1,6 +1,7 @@
 import { getHiddenEnvelopeRecipient, summarizeAuthentication, formatAuthenticationCheck, formatTransportSecurity } from "@/components/messages/message-header-details-utils";
 import type { MessageHeaderDetails } from "@/lib/email/header-types";
 import { splitEmailAddressList } from "@/lib/email/address";
+import { attachmentViewerKind } from "@/lib/email/attachment-preview-utils";
 import { cx, html, raw, type Html } from "../html";
 import { icon } from "../icons";
 import type { V2Context, V2Folder, V2Thread, V2ThreadMessage, V2ViewKey } from "../types";
@@ -43,6 +44,13 @@ function renderTextBody(text: string): Html {
 		<details class="quote-fold"><summary aria-label="Show trimmed content" title="Show trimmed content">•••</summary><div class="mail-text is-quote">${raw(plainTextToHtml(quoted))}</div></details>`;
 }
 
+/** PDFs and images open in the page's viewer; the link stays a download for everything else. */
+function viewerAttributes(messageId: string, file: V2ThreadMessage["attachments"][number]): Html {
+	const kind = attachmentViewerKind(file.contentType, file.filename);
+	if (!kind) return html``;
+	return html` data-viewer="${kind}" data-viewer-src="${`/api/messages/${messageId}/attachments/${file.id}?preview=1`}"`;
+}
+
 export function renderMessageBody(message: V2ThreadMessage): Html {
 	const files = message.attachments.filter((item) => item.disposition === "attachment" || !item.contentId);
 	const body = message.htmlBody
@@ -51,7 +59,7 @@ export function renderMessageBody(message: V2ThreadMessage): Html {
 	return html`<div class="msg-content" id="${`body-${message.id}`}">
 		${body}
 		${files.length ? html`<div class="attachments">${files.map((file) => html`
-			<a class="attachment" href="${`/api/messages/${message.id}/attachments/${file.id}?download=1`}" hx-boost="false" download="${file.filename}">
+			<a class="attachment" href="${`/api/messages/${message.id}/attachments/${file.id}?download=1`}" hx-boost="false" download="${file.filename}"${viewerAttributes(message.id, file)}>
 				<span class="attachment-icon">${icon("paperclip")}</span>
 				<span class="attachment-name">${file.filename}</span>
 				<span class="attachment-size">${formatSize(file.size)}</span>
