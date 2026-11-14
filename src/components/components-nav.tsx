@@ -112,6 +112,22 @@ export function NavItem({ link }: { link: NavLink }) {
     );
   }
 
+  // v2 pages are server-rendered, not Next routes: a plain link, with no preload.
+  if (link.href.startsWith("/v2/")) {
+    return (
+      <a
+        href={link.href}
+        title={minimal ? link.label : undefined}
+        className={cn(!minimal && "-ml-3 pl-6", classes)}
+        {...dropProps}
+      >
+        <Icon style={{ color: link.iconColor }} size={18} />
+        {!minimal && <span className="flex-1">{link.label}</span>}
+        <NavBadge count={link.count} label={link.countLabel} minimal={minimal} />
+      </a>
+    );
+  }
+
   async function navigate(event: MouseEvent<HTMLAnchorElement>) {
     if (
       !link.preloadMessages ||

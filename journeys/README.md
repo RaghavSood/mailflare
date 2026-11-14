@@ -29,6 +29,7 @@ Natural-language end-to-end tests of the mobile web app (v2 as a PWA, plus the c
 | `23-undo-survives-new-mail` | New mail arriving over the realtime connection (delivered by the runner while the inbox is on screen) reloads the list in place and keeps the "Conversation archived." message with its Undo; Undo brings the conversation back (#48) |
 | `24-discard-offline-reply` | A reply the server has saved, discarded offline: the reply closes, its buttons come back and "Draft discarded." stays (the reload that closing it starts fails offline and must say nothing, #44); the discard replays on reconnect |
 | `25-act-on-a-selection-on-a-phone` | Two conversations selected by their avatars: every list toolbar button is on screen, 44 px and uncovered (the pager hides, Report spam and Mark read/unread are in "More actions"); Snooze → Next week on both, then Move → a folder ("Journey receipts", made in setup) on a third (#47) |
+| `26-settings-leads-back-to-v2` | Settings opened from the v2 drawer (`/v2/settings` records `mf_ui=v2`): the classic settings drawer's "Inbox" and "Archived" open the v2 inbox and archive, not the classic pages |
 
 Each journey's `<description>` states the starting state. Journeys start with the app already in the foreground; none of them launches it.
 

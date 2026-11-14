@@ -1,0 +1,15 @@
+<journey name="Settings opened from v2 leads back to v2">
+	<description>
+		Start: the Mailflare v2 inbox is open and signed in.
+		Settings are a classic page with the classic drawer; opened from v2, its mail links must lead back to v2, not to the classic pages.
+	</description>
+	<actions>
+		<action>Tap the menu button at the top left of the screen and tap "Settings" in the drawer</action>
+		<action>Verify that settings sections are shown as a horizontal row of tabs at the top (including "Account")</action>
+		<action>Tap the menu button at the top left of the screen and tap "Inbox" in the drawer</action>
+		<action>Verify that the v2 inbox is shown with the "Search mail" field and the round compose button</action>
+		<action>Tap the menu button at the top left of the screen and tap "Settings" in the drawer</action>
+		<action>Tap the menu button at the top left of the screen and tap "Archived" in the drawer</action>
+		<action>Verify that the v2 list heading reads "Archive"</action>
+	</actions>
+</journey>

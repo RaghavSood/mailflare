@@ -467,6 +467,10 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 		const location = to === "classic" ? v2ToClassic(from) : classicToV2(from);
 		return redirect(location, [cookie(UI_PREFERENCE_COOKIE, to, url)]);
 	}
+	if (route.kind === "action" && route.name === "settings") {
+		// Settings are a classic page; the preference is what leads its mail links back to v2.
+		return redirect("/settings/account", [cookie(UI_PREFERENCE_COOKIE, "v2", url)]);
+	}
 
 	if (method === "POST" && !isSameOrigin(request, url)) return htmlResponse("Forbidden", { status: 403 });
 	const identity = await loadIdentity(env, request);

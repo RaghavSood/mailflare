@@ -79,7 +79,7 @@ export function renderNav(ctx: V2Context, nav: NavState): Html {
 		${folders.length ? html`<div class="nav-heading">Folders</div><div class="nav-list">${folders}</div>` : ""}
 		<div class="sidebar-foot">
 			${ctx.vapidPublicKey ? renderPushToggle() : ""}
-			<a class="nav-item subtle" href="/settings/account" hx-boost="false" title="Settings">${icon("settings")}<span class="nav-label">Settings</span></a>
+			<a class="nav-item subtle" href="/v2/settings" hx-boost="false" title="Settings">${icon("settings")}<span class="nav-label">Settings</span></a>
 			<button type="button" class="nav-item subtle" data-help title="Keyboard shortcuts">${icon("keyboard")}<span class="nav-label">Keyboard shortcuts</span><kbd>?</kbd></button>
 			<a class="nav-item subtle" href="${`/v2/switch?to=classic&from=${encodeURIComponent(ctx.url.pathname)}`}" hx-boost="false" title="Switch to classic">${icon("layout")}<span class="nav-label">Switch to classic</span></a>
 		</div>

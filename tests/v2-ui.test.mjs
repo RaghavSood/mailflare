@@ -25,7 +25,7 @@ await build({
 			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
-			export { homePathFor } from "./src/lib/v2/preference.ts";
+			export { homePathFor, mailHrefFor } from "./src/lib/v2/preference.ts";
 			export { renderPage, ASSET_VERSION, HTMX_VERSION, SERVICE_WORKER_URL } from "./src/lib/v2/render/layout.ts";
 			export { renderComposer } from "./src/lib/v2/render/compose.ts";
 			export { renderDetails, renderThreadMain } from "./src/lib/v2/render/thread.ts";
@@ -81,6 +81,16 @@ test("the interface toggle lands on the same place in the other UI", () => {
 	assert.equal(v2.homePathFor("v2"), "/v2/inbox");
 	assert.equal(v2.homePathFor("classic"), "/inbox");
 	assert.equal(v2.homePathFor(undefined), "/inbox");
+});
+
+test("settings' mail links lead back to the interface the user chose", () => {
+	assert.equal(v2.mailHrefFor("v2", "/inbox"), "/v2/inbox");
+	assert.equal(v2.mailHrefFor("v2", "/archived"), "/v2/archive");
+	assert.equal(v2.mailHrefFor("v2", "/folders/fld_1"), "/v2/folder/fld_1");
+	// Compose opens the floating composer in place on either interface.
+	assert.equal(v2.mailHrefFor("v2", "/compose"), "/compose");
+	assert.equal(v2.mailHrefFor("classic", "/inbox"), "/inbox");
+	assert.equal(v2.mailHrefFor(undefined, "/archived"), "/archived");
 });
 
 test("post-action destinations stay inside /v2", () => {
@@ -345,7 +355,7 @@ test("with a VAPID key the body carries it and the sidebar has the notifications
 	const toggle = /<button type="button" class="nav-item subtle push-toggle" data-push hidden>[\s\S]*?<\/button>/.exec(on)?.[0];
 	assert.ok(toggle, "sidebar footer renders the toggle, hidden until app.js reads the browser's state");
 	assert.match(toggle, /data-push-label>Notifications</);
-	assert.ok(on.indexOf("data-push") < on.indexOf('href="/settings/account"'), "toggle sits in the sidebar footer above Settings");
+	assert.ok(on.indexOf("data-push") < on.indexOf('href="/v2/settings"'), "toggle sits in the sidebar footer above Settings");
 
 	const off = String(v2.renderPage({ ...base, vapidPublicKey: null }, { title: "Inbox", main: v2.html`<main id="main"></main>`, nav }));
 	assert.ok(!off.includes("data-vapid-key"));

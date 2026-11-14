@@ -35,6 +35,7 @@ import {
 } from "@/lib/folders/colors";
 import type { FolderColor } from "@/lib/folders/types";
 import { cn } from "@/lib/utils";
+import { homePathFor, mailHrefFor } from "@/lib/v2/preference";
 import { NavItem } from "./components-nav";
 import type { NavLink } from "./components-nav-types";
 import type { CustomFolder } from "./dashboard-nav-types";
@@ -64,7 +65,14 @@ const links = [
   { href: "/trash", label: "Trash", icon: Trash2, preloadMessages: true },
 ];
 
-export function DashboardNav({ className }: { className?: string }) {
+export function DashboardNav({
+  className,
+  uiPreference,
+}: {
+  className?: string;
+  /** The `mf_ui` cookie, on pages both interfaces share: "v2" points the mail links at v2. */
+  uiPreference?: string;
+}) {
   const { minimal } = useSidebar();
   const { selectedMailbox, isLoading } = useSelectedMailbox();
   const { counts } = useMessageCounts(selectedMailbox?.id, !isLoading);
@@ -115,7 +123,7 @@ export function DashboardNav({ className }: { className?: string }) {
       };
     }
     return link;
-  });
+  }).map((link) => (link.href ? { ...link, href: mailHrefFor(uiPreference, link.href) } : link));
 
   useEffect(() => {
     if (!selectedMailbox?.id) {
@@ -171,7 +179,7 @@ export function DashboardNav({ className }: { className?: string }) {
 
   return (
     <nav className={cn("flex min-h-full flex-col gap-1", className)}>
-      <SidebarHeader href="/inbox" />
+      <SidebarHeader href={homePathFor(uiPreference)} />
       {linksWithCounts.map((link, i) => (
         <NavItem link={link} key={`nav-${link.href || i}`} />
       ))}
@@ -256,7 +264,7 @@ export function DashboardNav({ className }: { className?: string }) {
         <NavItem
           key={folder.id}
           link={{
-            href: `/folders/${folder.id}`,
+            href: mailHrefFor(uiPreference, `/folders/${folder.id}`),
             label: folder.name,
             icon: Folder,
             preloadMessages: true,
