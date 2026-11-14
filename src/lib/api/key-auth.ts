@@ -2,7 +2,7 @@ import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { getDb, type AppDatabase } from "@/db";
 import { apiKeys, users } from "@/db/schema";
 import { parseScopes, verifyApiKey } from "@/lib/api-keys";
-import { apiKeyFromAuthorization, apiKeyPrefix, apiKeyRowWrite, digestApiKey, LAST_USED_WRITE_INTERVAL_MS } from "@/lib/api/key-auth-utils";
+import { apiKeyFromAuthorization, apiKeyPrefix, apiKeyRowWrite, digestApiKey, hasScope, LAST_USED_WRITE_INTERVAL_MS } from "@/lib/api/key-auth-utils";
 import type { ApiAuthResult } from "@/lib/api/key-auth-types";
 
 type KeyRow = typeof apiKeys.$inferSelect;
@@ -70,6 +70,4 @@ export async function authenticateApiRequest(env: CloudflareEnv, request: Reques
 	return key === null ? null : authenticateApiKeyValue(env, key);
 }
 
-export function hasScope(scopes: string[], required: string): boolean {
-	return scopes.includes(required) || scopes.includes("*");
-}
+export { hasScope };

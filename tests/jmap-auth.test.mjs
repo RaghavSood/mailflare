@@ -34,6 +34,8 @@ await build({
 			export { getMailboxDomainAddresses, getMailboxDomainAddressesByMailbox } from "./src/lib/mailboxes/domain-addresses.ts";
 			export { composeMailboxDomainAddresses } from "./src/lib/mailboxes/domain-addresses-utils.ts";
 			export { processRequest, validateRequest } from "./src/lib/jmap/processor.ts";
+			export { handleJmapRequest } from "./src/lib/jmap/handler.ts";
+			export { jmapAccess, JMAP_WRITE_METHODS } from "./src/lib/jmap/access-utils.ts";
 			export { isJmapPath, withDefaultHeaders } from "./worker-utils.ts";
 			export { eq } from "drizzle-orm";
 			import bcrypt from "bcryptjs";
@@ -355,7 +357,7 @@ describe("sendable addresses for Identity/get", () => {
 	test("Identity/get lists every sendable address in a fixed number of queries", async () => {
 		const key = await insertKey();
 		const auth = await m.authenticateApiKeyValue(env, key.key);
-		const ctx = { env, db, auth, accountId: USER.id, origin: "http://localhost", createdIds: {} };
+		const ctx = { env, db, auth, accountId: USER.id, origin: "http://localhost", readOnly: false, createdIds: {} };
 		let response;
 		const statements = await recordStatements(async () => {
 			response = await m.processRequest(ctx, m.validateRequest({
@@ -378,6 +380,73 @@ describe("sendable addresses for Identity/get", () => {
 		// The owned-mailboxes join and license check, then the five address queries — none per mailbox.
 		const addressQueries = statements.filter((sql) => /from "(domains|mailbox_aliases|mailboxes)"/.test(sql) && !/inner join "domains" on "mailboxes"/.test(sql));
 		assert.equal(addressQueries.length, 5, addressQueries.join("\n"));
+	});
+});
+
+describe("read-only JMAP keys", () => {
+	const USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission"];
+	const jmap = (key, path, init = {}) => m.handleJmapRequest(new Request(`http://localhost${path}`, { ...init, headers: { Authorization: `Bearer ${key}`, ...init.headers } }), env);
+	const call = async (key, methodCalls) => {
+		const response = await jmap(key, "/jmap/api", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ using: USING, methodCalls }) });
+		assert.equal(response.status, 200);
+		return (await response.json()).methodResponses;
+	};
+
+	test("a scope list maps to full, read or no JMAP access", () => {
+		assert.equal(m.jmapAccess(["jmap"]), "full");
+		assert.equal(m.jmapAccess(["jmap", "jmap-read"]), "full");
+		assert.equal(m.jmapAccess(["*"]), "full");
+		assert.equal(m.jmapAccess(["jmap-read", "send"]), "read");
+		assert.equal(m.jmapAccess(["read", "send"]), null);
+	});
+
+	test("the session and mailboxes tell the client it cannot write", async () => {
+		const { key } = await insertKey({ scopes: ["jmap-read"] });
+		const session = await (await jmap(key, "/jmap/session")).json();
+		assert.equal(session.accounts[USER.id].isReadOnly, true);
+		const [[name, result]] = await call(key, [["Mailbox/get", { accountId: USER.id, ids: null }, "m"]]);
+		assert.equal(name, "Mailbox/get");
+		assert.ok(result.list.length > 0);
+		for (const mailbox of result.list) {
+			assert.equal(mailbox.myRights.mayReadItems, true);
+			for (const right of ["mayAddItems", "mayRemoveItems", "maySetSeen", "maySetKeywords", "mayCreateChild", "mayRename", "mayDelete", "maySubmit"]) assert.equal(mailbox.myRights[right], false, right);
+		}
+
+		const { key: full } = await insertKey({ scopes: ["jmap"] });
+		assert.equal((await (await jmap(full, "/jmap/session")).json()).accounts[USER.id].isReadOnly, false);
+	});
+
+	test("reads answer and every write method is refused before it runs", async () => {
+		const { key } = await insertKey({ scopes: ["jmap-read"] });
+		const draft = { mailboxIds: {}, from: [{ email: "support@example.com" }], to: [{ email: "x@example.test" }], subject: "nope", textBody: [{ partId: "1" }], bodyValues: { 1: { value: "hi" } } };
+		const statements = await recordStatements(async () => {
+			const responses = await call(key, [
+				["Email/query", { accountId: USER.id }, "q"],
+				["Email/set", { accountId: USER.id, create: { d: draft } }, "s"],
+				["Email/import", { accountId: USER.id, emails: {} }, "i"],
+				["Mailbox/set", { accountId: USER.id, create: { f: { name: "New" } } }, "ms"],
+				["Identity/set", { accountId: USER.id, update: {} }, "is"],
+				["EmailSubmission/set", { accountId: USER.id, create: { x: { emailId: "msg_x", identityId: "idn_x" } } }, "es"],
+			]);
+			assert.equal(responses[0][0], "Email/query");
+			assert.deepEqual(responses.slice(1).map(([name, result, callId]) => [name, result.type, callId]), [
+				["error", "accountReadOnly", "s"],
+				["error", "accountReadOnly", "i"],
+				["error", "accountReadOnly", "ms"],
+				["error", "accountReadOnly", "is"],
+				["error", "accountReadOnly", "es"],
+			]);
+		});
+		assert.ok(!statements.some((sql) => /^\s*(insert|update|delete)\b/i.test(sql) && !/api_keys|jmap_change/i.test(sql)), statements.join("\n"));
+		for (const method of ["Email/set", "Email/import", "Mailbox/set", "Identity/set", "EmailSubmission/set"]) assert.ok(m.JMAP_WRITE_METHODS.has(method), method);
+	});
+
+	test("uploads are refused and keys without a JMAP scope are turned away", async () => {
+		const { key } = await insertKey({ scopes: ["jmap-read"] });
+		const upload = await jmap(key, `/jmap/upload/${USER.id}`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "hello" });
+		assert.equal(upload.status, 403);
+		const { key: other } = await insertKey({ scopes: ["read", "send"] });
+		assert.equal((await jmap(other, "/jmap/session")).status, 403);
 	});
 });
 

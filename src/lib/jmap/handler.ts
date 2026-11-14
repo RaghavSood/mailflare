@@ -1,5 +1,6 @@
 import { getDb } from "@/db";
-import { authenticateApiRequest, hasScope } from "@/lib/api/key-auth";
+import { authenticateApiRequest } from "@/lib/api/key-auth";
+import { jmapAccess } from "./access-utils";
 import { LIMITS } from "./constants";
 import { corsHeaders, JmapError, problemResponse } from "./errors";
 import { readBlob, storeUpload } from "./blobs";
@@ -33,10 +34,11 @@ export async function handleJmapRequest(request: Request, env: CloudflareEnv): P
 			headers: { ...JSON_HEADERS, "WWW-Authenticate": 'Basic realm="Mailflare JMAP", Bearer' },
 		});
 	}
-	if (!hasScope(auth.scopes, "jmap")) {
+	const access = jmapAccess(auth.scopes);
+	if (!access) {
 		return new Response(JSON.stringify({ error: "This API key does not have the jmap scope" }), { status: 403, headers: JSON_HEADERS });
 	}
-	const ctx: JmapContext = { env, db: getDb(env), auth, accountId: auth.userId, origin: env.APP_URL?.trim() || url.origin, createdIds: {} };
+	const ctx: JmapContext = { env, db: getDb(env), auth, accountId: auth.userId, origin: env.APP_URL?.trim() || url.origin, readOnly: access === "read", createdIds: {} };
 	// Old change-log history is dropped from the front at most once an hour; a failure here must not fail the request.
 	await pruneChangeLog(ctx).catch((error) => console.warn("JMAP change log prune failed", error));
 
@@ -85,6 +87,8 @@ export async function handleJmapRequest(request: Request, env: CloudflareEnv): P
 	const upload = path.match(/^\/jmap\/upload\/([^/]+)$/);
 	if (upload && request.method === "POST") {
 		if (decodeURIComponent(upload[1]) !== ctx.accountId) return problemResponse("accountNotFound", 404, "Unknown account");
+		// An upload only exists to be imported or attached, neither of which a read-only key may do.
+		if (ctx.readOnly) return problemResponse("forbidden", 403, "This API key is read-only");
 		const type = request.headers.get("content-type") || "application/octet-stream";
 		const disposition = request.headers.get("content-disposition") ?? "";
 		const name = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)?.[1] ?? null;

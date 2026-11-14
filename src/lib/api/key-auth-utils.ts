@@ -59,3 +59,7 @@ export function apiKeyFromAuthorization(authorization: string | null): string | 
 	const separator = decoded.indexOf(":");
 	return separator >= 0 ? decoded.slice(separator + 1) : decoded;
 }
+
+export function hasScope(scopes: string[], required: string): boolean {
+	return scopes.includes(required) || scopes.includes("*");
+}

@@ -3,6 +3,7 @@ import { JmapError } from "./errors";
 import { mailboxChanges, mailboxGet, mailboxQuery, mailboxSet } from "./mailboxes";
 import { emailChanges, emailGet, emailImport, emailQuery, emailQueryChanges, emailSet, emailUnsupported, searchSnippetGet, threadChanges, threadGet } from "./emails";
 import { emailSubmissionChanges, emailSubmissionGet, emailSubmissionQuery, emailSubmissionSet, identityChanges, identityGet, identitySet } from "./identities";
+import { JMAP_WRITE_METHODS } from "./access-utils";
 import { digestIds } from "./changes-utils";
 import { forgetMemo } from "./context-utils";
 import type { JmapContext, JmapInvocation, JmapMethodHandler, JmapRequest, JmapResponse } from "./types";
@@ -91,6 +92,10 @@ export async function processRequest(ctx: JmapContext, request: JmapRequest): Pr
 		const handler = METHODS[name];
 		if (!handler) {
 			responses.push(["error", { type: "unknownMethod" }, callId]);
+			continue;
+		}
+		if (ctx.readOnly && JMAP_WRITE_METHODS.has(name)) {
+			responses.push(["error", { type: "accountReadOnly", description: "This API key is read-only" }, callId]);
 			continue;
 		}
 		try {

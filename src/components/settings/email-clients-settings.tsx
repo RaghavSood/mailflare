@@ -6,6 +6,7 @@ import { Copy, KeyRound, Trash2 } from "lucide-react";
 import { parseApiKeyScopes } from "@/app/(admin)/api-keys/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ApiKeySummary } from "./types";
@@ -13,11 +14,13 @@ import { createJmapApiKey, listApiKeys, revokeApiKey } from "./utils";
 
 /**
  * Settings > Account card for connecting an external mail app over JMAP.
- * Mints an API key with the `jmap` scope, shows the details once, and lists
+ * Mints an API key with the `jmap` scope (or `jmap-read`, for apps and AI
+ * assistants that should only read), shows the details once, and lists
  * the account's keys so any of them can be revoked.
  */
 export function EmailClientsSettings() {
 	const [name, setName] = useState("");
+	const [readOnly, setReadOnly] = useState(false);
 	const [key, setKey] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -37,8 +40,9 @@ export function EmailClientsSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			setKey(await createJmapApiKey(name.trim() || "Mail app"));
+			setKey(await createJmapApiKey(name.trim() || "Mail app", readOnly));
 			setName("");
+			setReadOnly(false);
 			await qc.invalidateQueries({ queryKey: ["api-keys"] });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Could not create a key");
@@ -59,7 +63,7 @@ export function EmailClientsSettings() {
 	return (
 		<div className="space-y-4">
 			<p className="text-sm text-neutral-500">
-				Apps that speak JMAP (Mailtemi, Twake Mail, aerc, and others) can read and send your mail. Point the app at this server and sign in with your email address and an API key as the password.
+				Apps that speak JMAP (Mailtemi, Twake Mail, aerc, and others) can read and send your mail. Point the app at this server and sign in with your email address and an API key as the password. A read-only password can search and read mail but cannot send, move, delete or mark anything, which suits AI assistants and MCP servers.
 			</p>
 			{key ? (
 				<div className="space-y-3 rounded-2xl bg-neutral-50 p-4">
@@ -79,6 +83,10 @@ export function EmailClientsSettings() {
 						<Label htmlFor="jmap-key-name">Device or app name</Label>
 						<Input id="jmap-key-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Phone" />
 					</div>
+					<label className="flex h-10 items-center gap-2 text-sm text-neutral-700">
+						<Checkbox checked={readOnly} onChange={(event) => setReadOnly(event.target.checked)} />
+						Read only
+					</label>
 					<Button type="submit" disabled={busy}>
 						<KeyRound className="h-4 w-4" />
 						{busy ? "Creating..." : "Create app password"}

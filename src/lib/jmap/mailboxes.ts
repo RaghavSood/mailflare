@@ -63,18 +63,19 @@ function statusRole(status: string): SystemRole | null {
 	return null;
 }
 
-function rights(mailbox: AccessibleMailbox, system: boolean) {
-	const canWrite = mailbox.permission !== "read_only";
-	const canSend = mailbox.permission === "send_as" || mailbox.permission === "send_on_behalf" || mailbox.permission === "full_access";
+function rights(mailbox: AccessibleMailbox, system: boolean, readOnlyKey: boolean) {
+	const canWrite = !readOnlyKey && mailbox.permission !== "read_only";
+	const canManage = !readOnlyKey && mailbox.permission === "full_access";
+	const canSend = !readOnlyKey && (mailbox.permission === "send_as" || mailbox.permission === "send_on_behalf" || mailbox.permission === "full_access");
 	return {
 		mayReadItems: true,
 		mayAddItems: canWrite,
 		mayRemoveItems: canWrite,
 		maySetSeen: canWrite,
 		maySetKeywords: canWrite,
-		mayCreateChild: mailbox.permission === "full_access",
-		mayRename: !system && mailbox.permission === "full_access",
-		mayDelete: !system && mailbox.permission === "full_access",
+		mayCreateChild: canManage,
+		mayRename: !system && canManage,
+		mayDelete: !system && canManage,
 		maySubmit: canSend,
 	};
 }
@@ -101,7 +102,7 @@ export async function buildAllMailboxes(ctx: JmapContext) {
 			unreadEmails: accountCounts.unread,
 			totalThreads: accountCounts.total,
 			unreadThreads: accountCounts.unread,
-			myRights: rights(mailbox, true),
+			myRights: rights(mailbox, true, ctx.readOnly),
 			isSubscribed: true,
 		});
 		for (const role of SYSTEM_ROLES) {
@@ -117,7 +118,7 @@ export async function buildAllMailboxes(ctx: JmapContext) {
 				unreadEmails: role === "inbox" ? c.unread : 0,
 				totalThreads: c.total,
 				unreadThreads: role === "inbox" ? c.unread : 0,
-				myRights: rights(mailbox, true),
+				myRights: rights(mailbox, true, ctx.readOnly),
 				isSubscribed: true,
 			});
 		}
@@ -134,7 +135,7 @@ export async function buildAllMailboxes(ctx: JmapContext) {
 				unreadEmails: c.unread,
 				totalThreads: c.total,
 				unreadThreads: c.unread,
-				myRights: rights(mailbox, false),
+				myRights: rights(mailbox, false, ctx.readOnly),
 				isSubscribed: true,
 			});
 		}

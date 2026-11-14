@@ -29,6 +29,8 @@ export type JmapContext = {
 	auth: ApiAuthResult;
 	accountId: string;
 	origin: string;
+	/** The key has only the `jmap-read` scope: reads succeed, every write method answers `accountReadOnly`. */
+	readOnly: boolean;
 	/** Client-assigned creation ids resolved so far in this request. */
 	createdIds: Record<string, JmapId>;
 	/** Per-request memo, see `memoize` in context-utils.ts. Created on first use. */

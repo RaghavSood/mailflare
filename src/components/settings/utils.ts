@@ -120,7 +120,6 @@ export async function updatePassword(currentPassword: string, newPassword: strin
 	}
 }
 
-/** An API key limited to the JMAP scope, for external mail apps. */
 export async function listApiKeys(): Promise<ApiKeySummary[]> {
 	const res = await authFetch("/api/api-keys");
 	const data = (await res.json()) as { apiKeys?: ApiKeySummary[]; error?: unknown };
@@ -136,11 +135,12 @@ export async function revokeApiKey(id: string): Promise<void> {
 	}
 }
 
-export async function createJmapApiKey(name: string): Promise<string> {
+/** A JMAP key for an external app; `readOnly` mints `jmap-read`, which can read mail but not change or send it. */
+export async function createJmapApiKey(name: string, readOnly = false): Promise<string> {
 	const res = await authFetch("/api/api-keys", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ name, scopes: ["jmap"] }),
+		body: JSON.stringify({ name, scopes: [readOnly ? "jmap-read" : "jmap"] }),
 	});
 	const data = (await res.json()) as { key?: string; error?: unknown };
 	if (!res.ok || !data.key) throw new Error(typeof data.error === "string" ? data.error : "Could not create a key");

@@ -23,7 +23,7 @@ export function buildSession(ctx: JmapContext, sessionState: string) {
 			[ctx.accountId]: {
 				name: ctx.auth.email,
 				isPersonal: true,
-				isReadOnly: false,
+				isReadOnly: ctx.readOnly,
 				accountCapabilities: {
 					[CAPABILITY_MAIL]: {
 						maxMailboxesPerEmail: 1,
