@@ -15,7 +15,7 @@ import { vapidKeyId } from "@/lib/push/vapid-utils";
 import { historyHeaders } from "./handler-utils";
 import { html, type Html } from "./html";
 import { classicToV2, listHref, parseV2Path, safeReturnPath, v2ToClassic } from "./paths";
-import { UI_PREFERENCE_COOKIE } from "./preference";
+import { UI_PREFERENCE_COOKIE, uiPreferenceForRequest } from "./preference";
 import { withQueryTimer, type QueryTimer } from "./timing";
 import type { V2Context, V2Mailbox, V2Theme, V2ViewKey } from "./types";
 import { loadFolder, loadMailboxes } from "./data/context";
@@ -495,7 +495,9 @@ async function route(request: Request, env: CloudflareEnv): Promise<Response> {
 	if (method === "GET") {
 		if (route.kind === "view") {
 			const page = await renderRoute(ctx);
-			return htmlResponse(page.body, { status: page.status });
+			// Using v2 makes it the interface "/" and the next sign-in lead to.
+			const headers: Record<string, string> = uiPreferenceForRequest(request) === "v2" ? {} : { "Set-Cookie": cookie(UI_PREFERENCE_COOKIE, "v2", url) };
+			return htmlResponse(page.body, { status: page.status, headers });
 		}
 		const [name, id] = route.name.split("/");
 		if (name === "compose") {

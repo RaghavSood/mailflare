@@ -8,9 +8,12 @@ export function homePathFor(preference: string | null | undefined): string {
 	return preference === "v2" ? "/v2/inbox" : "/inbox";
 }
 
+export function uiPreferenceForRequest(request: Request): string | undefined {
+	return (request.headers.get("cookie") ?? "").match(/(?:^|;\s*)mf_ui=([^;]+)/)?.[1];
+}
+
 export function homePathForRequest(request: Request): string {
-	const match = (request.headers.get("cookie") ?? "").match(/(?:^|;\s*)mf_ui=([^;]+)/);
-	return homePathFor(match?.[1]);
+	return homePathFor(uiPreferenceForRequest(request));
 }
 
 /**

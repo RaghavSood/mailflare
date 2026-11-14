@@ -58,9 +58,9 @@ export const deliverySignals = [
 	"API keys and webhooks managed beside the inbox",
 ];
 
-export function getHomeActions(isLoggedIn: boolean): HomeAction[] {
+export function getHomeActions(isLoggedIn: boolean, homePath = "/inbox"): HomeAction[] {
 	if (isLoggedIn) {
-		return [{ href: "/inbox", label: "Dashboard", variant: "default" }];
+		return [{ href: homePath, label: "Dashboard", variant: "default" }];
 	}
 
 	return [
