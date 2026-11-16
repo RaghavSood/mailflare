@@ -32,3 +32,34 @@ export function getRecipientLabel(entry: string): string {
 	const parts = parseEmailAddressParts(entry);
 	return parts.name && parts.name !== parts.address ? parts.name : parts.address;
 }
+
+/**
+ * Split what has been typed into finished entries and the part still being typed. A comma or
+ * semicolon finishes an entry, and so does whitespace after a complete address, so "bob@x.io "
+ * becomes a chip while "Maya Chen" keeps typing towards "<maya@...>". Separators inside quotes
+ * or angle brackets do not count. public/v2-assets/app.js has the same rule (splitRecipients).
+ */
+export function splitTypedRecipients(text: string): { done: string[]; rest: string } {
+	const done: string[] = [];
+	let current = "";
+	let quoted = false;
+	let angle = false;
+	for (const char of text) {
+		if (char === "\"") quoted = !quoted;
+		else if (char === "<" && !quoted) angle = true;
+		else if (char === ">" && !quoted) angle = false;
+		const separator = char === "," || char === ";" || (/\s/.test(char) && isCompleteRecipient(current));
+		if (separator && !quoted && !angle) {
+			if (current.trim()) done.push(current.trim());
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+	return { done, rest: current.replace(/^\s+/, "") };
+}
+
+function isCompleteRecipient(text: string): boolean {
+	const value = text.trim();
+	return /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/.test(value) || /<[^\s@<>]+@[^\s@<>]+>$/.test(value);
+}

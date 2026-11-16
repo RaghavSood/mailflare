@@ -7,12 +7,13 @@ import { Label } from "@/components/ui/label";
 import { getEmailAddress } from "@/lib/email/address";
 import { cn } from "@/lib/utils";
 import type { RecipientInputProps } from "./recipient-input-types";
-import { getRecipientLabel, isValidRecipient, parseRecipientEntries } from "./recipient-utils";
+import { getRecipientLabel, isValidRecipient, parseRecipientEntries, splitTypedRecipients } from "./recipient-utils";
 
 /**
  * A To/Cc/Bcc row. Addresses become chips as soon as the user types a comma,
- * presses Enter or Tab, pastes a list, or leaves the field; Backspace on an
- * empty field pulls the last chip back out for editing.
+ * semicolon or a space after a complete address, presses Enter or Tab, pastes a
+ * list, or leaves the field; Backspace on an empty field pulls the last chip back
+ * out for editing.
  */
 export function RecipientInput({
 	id,
@@ -35,7 +36,8 @@ export function RecipientInput({
 	}
 
 	function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-		if (event.key === "," || event.key === ";" || event.key === "Enter" || (event.key === "Tab" && draft.trim())) {
+		// Separators are handled in onChange: Android keyboards report most keys as "Unidentified".
+		if (event.key === "Enter" || (event.key === "Tab" && draft.trim())) {
 			if (event.key !== "Tab") event.preventDefault();
 			commit();
 			return;
@@ -92,12 +94,12 @@ export function RecipientInput({
 					id={id}
 					value={draft}
 					onChange={(event) => {
-						// A pasted list should split immediately instead of waiting for a comma.
-						if (/[,;]/.test(event.target.value) && event.target.value.length - draft.length > 1) {
-							commit(event.target.value);
-							return;
+						const { done, rest } = splitTypedRecipients(event.target.value);
+						if (done.length > 0) {
+							const entries = parseRecipientEntries(done.join(", "), value);
+							if (entries.length > 0) onChange([...value, ...entries]);
 						}
-						setDraft(event.target.value);
+						setDraft(rest);
 					}}
 					onKeyDown={onKeyDown}
 					onBlur={() => commit()}

@@ -550,8 +550,12 @@
 		return Math.abs(dx) >= width * 0.35 ? action : null;
 	}
 
-	/** Split typed recipients into finished entries and the part still being typed. */
-	function splitRecipients(text) {
+	/**
+	 * Split typed recipients into finished entries and the part still being typed. With
+	 * spaces, whitespace also finishes an entry that is already a complete address, so
+	 * "bob@x.io " becomes a chip while "Maya Chen" keeps typing towards "<maya@...>".
+	 */
+	function splitRecipients(text, { spaces = false } = {}) {
 		const done = [];
 		let current = "";
 		let quoted = false;
@@ -560,7 +564,8 @@
 			if (char === "\"") quoted = !quoted;
 			else if (char === "<" && !quoted) angle = true;
 			else if (char === ">" && !quoted) angle = false;
-			if ((char === "," || char === ";") && !quoted && !angle) {
+			const separator = char === "," || char === ";" || (spaces && /\s/.test(char) && isCompleteAddress(current));
+			if (separator && !quoted && !angle) {
 				if (current.trim()) done.push(current.trim());
 				current = "";
 				continue;
@@ -568,6 +573,11 @@
 			current += char;
 		}
 		return { done, rest: current.replace(/^\s+/, "") };
+	}
+
+	/** Whether one recipient entry holds a usable address; recipientProblem refuses the rest. */
+	function isValidRecipient(entry) {
+		return /^[^\s@<>",;]+@[^\s@<>",;]+$/.test(parseRecipient(entry).email);
 	}
 
 	/** A finished address: a bare email, or a display name with an address in angle brackets. */
@@ -591,7 +601,7 @@
 	function recipientProblem(fields) {
 		for (const [field, value] of fields) {
 			const entries = splitRecipients(`${value ?? ""},`).done;
-			const bad = entries.find((entry) => !/^[^\s@<>",;]+@[^\s@<>",;]+$/.test(parseRecipient(entry).email));
+			const bad = entries.find((entry) => !isValidRecipient(entry));
 			if (bad) return { field, message: `"${bad}" isn't an email address.` };
 			if (field === "to" && !entries.length) return { field, message: "Add at least one recipient." };
 		}
@@ -1020,15 +1030,16 @@
 		}
 	}
 
-	/* Recipient chips on touch screens: finished addresses become chips, and contact
-	   suggestions open as a tappable list under the field instead of a datalist that
-	   on-screen keyboards hide. A hidden input keeps the field's name, so drafts,
-	   sending and validation read the same comma-separated value as before. */
+	/* Recipient chips: a comma, semicolon, Enter or a space after a complete address turns
+	   it into a chip (red when it is not an address), and contact suggestions open as a
+	   list under the field instead of a datalist that on-screen keyboards hide; arrow keys
+	   move through it. A hidden input keeps the field's name, so drafts, sending and
+	   validation read the same comma-separated value as before. */
 
 	let contactObserver = null;
 
 	function setupRecipientChips(root) {
-		if (!coarsePointer.matches || !(root instanceof Element || root instanceof Document)) return;
+		if (!(root instanceof Element || root instanceof Document)) return;
 		$$("[data-composer] input[data-recipients]", root).forEach(enhanceRecipients);
 		const datalist = $("#v2-contacts");
 		if (datalist && !contactObserver) {
@@ -1059,6 +1070,12 @@
 		input.after(hidden);
 		// What to focus when the field needs attention (Send with no recipient).
 		hidden.recipientInput = input;
+		// A draft restored from this device replaces the chips.
+		hidden.recipientSet = (value) => {
+			addresses.splice(0, addresses.length, ...splitRecipients(`${value},`).done);
+			input.value = "";
+			render();
+		};
 		field?.append(suggest);
 		const removeGlyph = $("[data-cmp-close] svg", form);
 		const addresses = splitRecipients(`${input.value},`).done;
@@ -1071,7 +1088,7 @@
 			chips.replaceChildren(...addresses.map((address, index) => {
 				const { name, email } = parseRecipient(address);
 				const chip = document.createElement("span");
-				chip.className = "rcpt-chip";
+				chip.className = isValidRecipient(address) ? "rcpt-chip" : "rcpt-chip is-invalid";
 				chip.title = email;
 				const label = document.createElement("span");
 				label.textContent = name || email;
@@ -1096,9 +1113,18 @@
 			render();
 			input.dispatchEvent(new Event("input", { bubbles: true }));
 		};
+		let active = -1;
+		const options = () => $$(".rcpt-option", suggest);
+		const highlight = (index) => {
+			const items = options();
+			active = items.length ? (index + items.length) % items.length : -1;
+			items.forEach((item, at) => item.setAttribute("aria-selected", String(at === active)));
+			items[active]?.scrollIntoView({ block: "nearest" });
+		};
 		const hideSuggestions = () => {
 			suggest.hidden = true;
 			suggest.replaceChildren();
+			active = -1;
 		};
 		const take = (text) => {
 			addresses.push(text.trim());
@@ -1117,6 +1143,8 @@
 				const button = document.createElement("button");
 				button.type = "button";
 				button.className = "rcpt-option";
+				button.dataset.value = value;
+				button.tabIndex = -1;
 				const title = document.createElement("span");
 				title.textContent = name || email;
 				button.append(title);
@@ -1135,11 +1163,12 @@
 				return item;
 			}));
 			suggest.hidden = false;
+			active = -1;
 		};
 
 		input.addEventListener("input", (event) => {
 			if (!event.isTrusted) return sync();
-			const { done, rest } = splitRecipients(input.value);
+			const { done, rest } = splitRecipients(input.value, { spaces: true });
 			if (done.length) {
 				addresses.push(...done);
 				input.value = rest;
@@ -1150,10 +1179,23 @@
 			if (input.value.trim().length < 2) hideSuggestions();
 		});
 		input.addEventListener("keydown", (event) => {
-			if (event.key === "Enter") {
+			const suggesting = !suggest.hidden && options().length > 0;
+			if (suggesting && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+				event.preventDefault();
+				highlight(active + (event.key === "ArrowDown" ? 1 : -1));
+			} else if (suggesting && event.key === "Escape") {
+				// Close the list without letting Escape close the composer.
+				event.preventDefault();
+				event.stopPropagation();
+				hideSuggestions();
+			} else if (event.key === "Tab" && !event.shiftKey && input.value.trim()) {
+				event.preventDefault();
+				take(suggesting && active >= 0 ? options()[active].dataset.value : input.value);
+			} else if (event.key === "Enter") {
 				// Enter would submit the form, which sends the message.
 				event.preventDefault();
-				if (input.value.trim()) take(input.value);
+				if (suggesting && active >= 0) take(options()[active].dataset.value);
+				else if (input.value.trim()) take(input.value);
 				else $("[data-cmp-subject]", form)?.focus();
 			} else if (event.key === "Backspace" && !input.value && addresses.length) {
 				event.preventDefault();
@@ -1573,8 +1615,13 @@
 			return true;
 		};
 		if (event.key === "Enter") return run(() => form.requestSubmit($("[data-cmp-send]", form)));
-		if (shift && code === "KeyC") return run(() => $('[data-cmp-show="cc"]', form)?.click() ?? $('[name="cc"]', form)?.focus());
-		if (shift && code === "KeyB") return run(() => $('[data-cmp-show="bcc"]', form)?.click() ?? $('[name="bcc"]', form)?.focus());
+		// A chip field's name is on a hidden input; focus the one being typed in.
+		const focusField = (name) => {
+			const field = $(`[name="${name}"]`, form);
+			(field?.recipientInput ?? field)?.focus();
+		};
+		if (shift && code === "KeyC") return run(() => $('[data-cmp-show="cc"]', form)?.click() ?? focusField("cc"));
+		if (shift && code === "KeyB") return run(() => $('[data-cmp-show="bcc"]', form)?.click() ?? focusField("bcc"));
 		if (shift && code === "KeyF") return run(() => $("[data-cmp-from]", form)?.focus());
 		const inEditor = document.activeElement?.matches?.("[data-editor]");
 		if (!inEditor) return false;
@@ -2423,7 +2470,8 @@
 			const input = form.elements[name];
 			const saved = Offline.fieldValue(entry.fields, name);
 			if (input && saved !== input.value) {
-				input.value = saved;
+				if (input.recipientSet) input.recipientSet(saved);
+				else input.value = saved;
 				input.closest("[data-cmp-row]")?.removeAttribute("hidden");
 			}
 		}
