@@ -22,6 +22,7 @@ await build({
 			export { neutralizeEmailHtml, buildMailFrameDocument, plainTextToHtml, resolveContentIds } from "./src/lib/v2/render/mail-frame.ts";
 			export { buildParticipants, chunk, summaryView, memberInView } from "./src/lib/v2/data/list-utils.ts";
 			export { pickActionTargets, parseUndoEntries } from "./src/lib/v2/data/thread-utils.ts";
+			export { inboxStatusFor } from "./src/app/api/messages/bulk/utils.ts";
 			export { buildReplyRecipients, replySubject, buildQuoteHtml, htmlToMailText, parseFromValue, draftForSend, DraftGoneError, DraftSendingError } from "./src/lib/v2/data/compose-utils.ts";
 			export { zonedTime, resolveSnoozeTime } from "./src/lib/v2/data/time-utils.ts";
 			export { formatListDate, initials, recipientSummary, resolveTimeZone } from "./src/lib/v2/render/format.ts";
@@ -179,6 +180,23 @@ test("actions only touch the messages they make sense for", () => {
 	assert.deepEqual(ids("unread"), []);
 	assert.deepEqual(v2.pickActionTargets(candidates.slice(0, 2), "unread", "inbox").map((item) => item.id), ["in1"]);
 	assert.deepEqual(v2.pickActionTargets(candidates, "folder", "drafts"), []);
+});
+
+test("restoring a conversation from Trash brings back your replies, and they return to Sent", () => {
+	const at = (minutes) => new Date(Date.UTC(2026, 0, 1, 0, minutes));
+	const trashed = [
+		{ id: "in1", key: "t", direction: "inbound", status: "trash", folderId: null, read: true, starred: false, createdAt: at(1) },
+		{ id: "out1", key: "t", direction: "outbound", status: "trash", folderId: null, read: true, starred: false, createdAt: at(2) },
+		{ id: "in2", key: "t", direction: "inbound", status: "trash", folderId: null, read: true, starred: false, createdAt: at(3) },
+		{ id: "out2", key: "t", direction: "outbound", status: "trash", folderId: null, read: true, starred: false, createdAt: at(4) },
+	];
+	assert.deepEqual(v2.pickActionTargets(trashed, "inbox", "trash").map((item) => item.id).sort(), ["in1", "in2", "out1", "out2"]);
+	// Moving to Inbox from anywhere else still leaves sent mail where it is.
+	const live = trashed.map((item) => ({ ...item, status: item.direction === "inbound" ? "archived" : "sent" }));
+	assert.deepEqual(v2.pickActionTargets(live, "inbox", "archive").map((item) => item.id).sort(), ["in1", "in2"]);
+	assert.equal(v2.inboxStatusFor({ direction: "inbound", providerMessageId: "<a@b>" }), "received");
+	assert.equal(v2.inboxStatusFor({ direction: "outbound", providerMessageId: "a@cf" }), "sent");
+	assert.equal(v2.inboxStatusFor({ direction: "outbound", providerMessageId: null }), "draft");
 });
 
 test("undo data from the browser is validated before anything is restored", () => {

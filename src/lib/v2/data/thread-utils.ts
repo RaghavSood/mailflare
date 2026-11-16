@@ -20,7 +20,8 @@ const RESTORABLE_STATUSES = new Set(["received", "sent", "queued", "draft", "arc
  * Which messages of the chosen conversations an action changes. Archive,
  * spam and moves only make sense for mail that was received; marking unread
  * marks the newest received message, as Gmail does; trash takes everything
- * not already there.
+ * not already there, and moving out of Trash brings back your own messages
+ * with the received ones (applyMessageAction returns them to Sent).
  */
 export function pickActionTargets(
 	candidates: ActionCandidate[],
@@ -36,7 +37,10 @@ export function pickActionTargets(
 		case "spam":
 			return inbound.filter((candidate) => candidate.status !== "spam");
 		case "inbox":
-			return inbound.filter((candidate) => candidate.status !== "received" || candidate.folderId !== null);
+			return candidates.filter((candidate) =>
+				candidate.direction === "inbound"
+					? candidate.status !== "received" || candidate.folderId !== null
+					: candidate.status === "trash");
 		case "folder":
 			return view === "drafts" ? [] : inbound;
 		case "read":

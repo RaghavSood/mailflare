@@ -5,6 +5,7 @@ import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import {
 	getReadValueForBulkAction,
 	getStatusForBulkAction,
+	inboxStatusFor,
 } from "@/app/api/messages/bulk/utils";
 import type { SessionUser } from "@/lib/auth/types";
 import { getMailboxAccessLevel } from "@/lib/mailboxes/access";
@@ -59,7 +60,13 @@ export async function applyMessageAction(
 	if (Object.keys(values).length === 0) throw new MessageActionError("No changes requested", 400);
 
 	const selectedMessages = await db
-		.select({ id: messages.id, mailboxId: messages.mailboxId, status: messages.status })
+		.select({
+			id: messages.id,
+			mailboxId: messages.mailboxId,
+			status: messages.status,
+			direction: messages.direction,
+			providerMessageId: messages.providerMessageId,
+		})
 		.from(messages)
 		.where(inArray(messages.id, messageIds));
 	const accessByMailbox = new Map<string, Awaited<ReturnType<typeof getMailboxAccessLevel>>>();
@@ -88,7 +95,14 @@ export async function applyMessageAction(
 		const spamMessageIds = selectedMessages
 			.filter((message) => message.status === "spam" && allowedMessageIds.includes(message.id))
 			.map((message) => message.id);
-		await updateInChunks(db, allowedMessageIds, values);
+		// Restoring a conversation from Trash brings your own messages back too; they return to Sent.
+		const byStatus = new Map<string, string[]>();
+		for (const message of selectedMessages) {
+			if (!allowedMessageIds.includes(message.id)) continue;
+			const restored = inboxStatusFor(message);
+			byStatus.set(restored, [...(byStatus.get(restored) ?? []), message.id]);
+		}
+		for (const [restored, ids] of byStatus) await updateInChunks(db, ids, { ...values, status: restored });
 		if (spamMessageIds.length) {
 			runAfterResponse("Not-spam training", async () => {
 				for (const messageId of spamMessageIds) await applySpamFeedback(env, user, messageId, "ham");

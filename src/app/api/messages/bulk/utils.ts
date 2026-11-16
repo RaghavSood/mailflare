@@ -23,6 +23,15 @@ export function getStatusForBulkAction(action: BulkMessageAction): string | null
 	return null;
 }
 
+/**
+ * The status "inbox" gives a message. Mail you sent goes back to Sent (or Drafts, if it was
+ * never sent: only a delivered copy has a provider Message-ID), not into the Inbox.
+ */
+export function inboxStatusFor(message: { direction: string; providerMessageId: string | null }): string {
+	if (message.direction !== "outbound") return "received";
+	return message.providerMessageId ? "sent" : "draft";
+}
+
 export function getReadValueForBulkAction(action: BulkMessageAction): boolean | null {
 	if (action === "read") return true;
 	if (action === "unread") return false;
