@@ -2,7 +2,7 @@ import { cx, html, raw, type Html } from "../html";
 import { icon } from "../icons";
 import type { ComposeDraft } from "../data/compose";
 import type { V2Mailbox } from "../types";
-import { neutralizeEmailHtml } from "./mail-frame";
+import { buildMailFrameDocument, neutralizeEmailHtml } from "./mail-frame";
 import { formatSize } from "./format";
 
 export type ComposerMode = "dock" | "inline" | "page";
@@ -94,7 +94,10 @@ export function renderComposer(
 			</div>
 		</div>
 		<div class="cmp-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body" data-editor>${raw(neutralizeEmailHtml(draft.bodyHtml))}</div>
-		${draft.quoteHtml ? html`<div class="cmp-quote" title="The quoted message is sent below your reply">${icon("quote")}<span>${draft.inReplyTo ? "Quoted text" : "Forwarded message"} included</span></div>` : ""}
+		${draft.quoteHtml ? html`<details class="cmp-quote">
+			<summary title="The quoted message is sent below your reply">${icon("quote")}<span>${draft.inReplyTo ? "Quoted text" : "Forwarded message"} included</span><span class="cmp-quote-toggle" aria-hidden="true"></span></summary>
+			<div class="cmp-quote-body"><iframe class="mail-frame" data-no-fold title="Quoted message" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" srcdoc="${buildMailFrameDocument(draft.quoteHtml)}"></iframe></div>
+		</details>` : ""}
 		<template data-cmp-x-icon>${icon("x")}</template>
 		<div class="cmp-files" data-cmp-files>
 			${draft.attachments.map((file) => html`<span class="file-chip" data-stored-attachment="${file.id}">${icon("paperclip")}<span>${file.filename}</span><small>${formatSize(file.size)}</small><button type="button" class="icon-button" data-remove-attachment="${file.id}" aria-label="${`Remove ${file.filename}`}">${icon("x")}</button></span>`)}

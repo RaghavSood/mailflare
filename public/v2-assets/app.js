@@ -509,7 +509,8 @@
 		if (frame.dataset.ready) return;
 		frame.dataset.ready = "1";
 		const ready = () => {
-			foldQuote(frame);
+			// The composer's quote preview is nothing but the quote.
+			if (!frame.hasAttribute("data-no-fold")) foldQuote(frame);
 			sizeFrame(frame);
 			try {
 				const doc = frame.contentDocument;
@@ -538,6 +539,10 @@
 		poll();
 	}
 	window.addEventListener("resize", () => $$("iframe.mail-frame").forEach(sizeFrame));
+	// A frame in a closed <details> has no height to measure until it opens.
+	document.addEventListener("toggle", (event) => {
+		if (event.target instanceof HTMLDetailsElement && event.target.open) $$("iframe.mail-frame", event.target).forEach(sizeFrame);
+	}, true);
 
 	/* ---------- touch: sheets, swipe, pull to refresh, recipients, split pane ---------- */
 
@@ -1309,6 +1314,8 @@
 
 	/** The reply buttons a reply composer took the place of, kept for when closing it cannot reload the conversation. */
 	let replyButtons = null;
+	/** Set when Reply swaps in a composer: the button that had focus is gone, so the composer takes it. */
+	let focusNextReply = false;
 	document.addEventListener("htmx:beforeSwap", (event) => {
 		const slot = event.detail.target;
 		if (slot?.id !== "reply-slot" || slot.querySelector("[data-composer]")) return;
@@ -1316,6 +1323,7 @@
 		const copy = slot.cloneNode(true);
 		for (const el of [copy, ...copy.querySelectorAll("[class*='htmx-']")]) el.classList.remove(...[...el.classList].filter((name) => name.startsWith("htmx-")));
 		replyButtons = { path: location.pathname, html: copy.outerHTML };
+		focusNextReply = true;
 	});
 	function restoreReplySlot(form) {
 		const slot = form.closest("#reply-slot");
@@ -1379,10 +1387,35 @@
 		}
 	}
 
+	/**
+	 * Put the cursor where the person starts typing: the first empty recipient
+	 * field (a forward has none yet), otherwise the top of the message, above
+	 * the signature and quote.
+	 */
+	function focusComposer(form) {
+		const to = form.elements.to;
+		if (to && !to.value.trim()) return (to.recipientInput ?? to).focus();
+		const editor = $("[data-editor]", form);
+		if (!editor) return;
+		editor.focus();
+		const range = document.createRange();
+		range.setStart(editor, 0);
+		range.collapse(true);
+		const selection = getSelection();
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+		editor.scrollIntoView({ block: "nearest" });
+	}
+
 	function setupComposer(form) {
 		if (form.dataset.ready) return;
 		form.dataset.ready = "1";
 		restoreDraftFromDevice(form);
+		if (focusNextReply && form.closest("#reply-slot")) {
+			focusNextReply = false;
+			// After htmx's own focus handling, which would put it back on the page.
+			requestAnimationFrame(() => focusComposer(form));
+		}
 		let timer = 0;
 		const schedule = () => {
 			clearTimeout(timer);
@@ -1593,6 +1626,24 @@
 		closeComposer(form, { save: false });
 	}
 
+	/** Set when Escape takes the person out of a composer on purpose; shortcuts work again until they go back in. */
+	let leftComposer = false;
+	document.addEventListener("focusin", (event) => {
+		if (event.target instanceof Element && event.target.closest("[data-composer]")) leftComposer = false;
+	});
+
+	/**
+	 * The composer a stray keystroke belongs to: a reply still loading, or one
+	 * open on the page or in the dock that the person has not left with Escape.
+	 * Focus can drop out of a composer (a click on its padding, a swap), and the
+	 * next letter typed would otherwise archive or delete the conversation.
+	 */
+	function composerHoldingKeys() {
+		if ($("#reply-slot .htmx-request, #reply-slot.htmx-request")) return "loading";
+		if (leftComposer) return null;
+		return $("#main [data-composer]:not([data-closed])") ?? $("#compose-dock [data-composer]:not(.is-minimized):not([data-closed])");
+	}
+
 	function activeComposer() {
 		return document.activeElement?.closest?.("[data-composer]") ?? null;
 	}
@@ -1604,6 +1655,7 @@
 			event.preventDefault();
 			if (form.dataset.mode === "dock") form.classList.add("is-minimized");
 			document.activeElement?.blur();
+			leftComposer = true;
 			return true;
 		}
 		if (!mod) return false;
@@ -1823,6 +1875,19 @@
 		}
 		if (!shortcutsOn() || isTyping(event.target)) return;
 		if (event.metaKey || event.ctrlKey || event.altKey) return;
+		if (event.key.length === 1) {
+			const holder = composerHoldingKeys();
+			if (holder === "loading") {
+				event.preventDefault();
+				return;
+			}
+			if (holder) {
+				// Focus moves before the character is inserted, so it lands in the composer.
+				const editor = $("[data-editor]", holder);
+				if (editor && !holder.contains(document.activeElement)) editor.focus();
+				return;
+			}
+		}
 		const kind = pageKind();
 		const name = keyName(event);
 		// Enter on a focused link or button already activates it.
