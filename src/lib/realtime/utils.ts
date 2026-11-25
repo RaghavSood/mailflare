@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { domains, mailboxAccess, mailboxes } from "@/db/schema";
+import { mailboxAccess, mailboxes } from "@/db/schema";
 import { isTeamMailboxSharingEnabled } from "@/lib/mailboxes/access-utils";
 import { enqueuePushNotifications } from "@/lib/push/delivery";
 import { buildPushNotification } from "@/lib/push/push-utils";
@@ -21,19 +21,24 @@ export function getSessionTokenFromRequest(request: Request): string | undefined
 	return undefined;
 }
 
+/**
+ * Who hears about new mail in a mailbox: exactly the users who can read it
+ * (see `getMailboxAccessLevel`), so its owner and, for a shared mailbox, the
+ * users it is shared with. Owning the domain grants no access, so a domain
+ * owner is not told about other people's mail.
+ */
 export async function getMailboxNotificationUserIds(
 	env: CloudflareEnv,
 	mailboxId: string,
 	ownerUserId: string,
 ): Promise<string[]> {
 	const db = getDb(env);
-	const mailboxRows = await db
-		.select({ domainOwnerUserId: domains.userId, type: mailboxes.type })
+	const [mailbox] = await db
+		.select({ type: mailboxes.type })
 		.from(mailboxes)
-		.innerJoin(domains, eq(mailboxes.domainId, domains.id))
 		.where(eq(mailboxes.id, mailboxId))
 		.limit(1);
-	const sharedUserIds = mailboxRows[0]?.type === "shared" && await isTeamMailboxSharingEnabled(db)
+	const sharedUserIds = mailbox?.type === "shared" && await isTeamMailboxSharingEnabled(db)
 		? (await db
 			.select({ userId: mailboxAccess.userId })
 			.from(mailboxAccess)
@@ -41,13 +46,7 @@ export async function getMailboxNotificationUserIds(
 			.map((access) => access.userId)
 		: [];
 
-	return [
-		...new Set([
-			ownerUserId,
-			mailboxRows[0]?.domainOwnerUserId,
-			...sharedUserIds,
-		].filter((userId): userId is string => !!userId)),
-	];
+	return [...new Set([ownerUserId, ...sharedUserIds].filter((userId): userId is string => !!userId))];
 }
 
 /**
